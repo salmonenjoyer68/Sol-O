@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Data, models, and generated outputs
+data/**/*
+!data/**/.gitkeep
+models/**/*
+!models/**/.gitkeep
+artifacts/**/*
+!artifacts/**/.gitkeep
+experiments/**/*
+!experiments/**/.gitkeep
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
