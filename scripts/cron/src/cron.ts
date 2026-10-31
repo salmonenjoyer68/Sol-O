@@ -333,7 +333,7 @@ export function nextRun(
   const timeZone = options.timeZone ?? "UTC";
   const from = options.from ?? new Date();
 
-  if (Number.isNaN(from.getTime())) {
+  if (!(from instanceof Date) || Number.isNaN(from.getTime())) {
     throw new CronError("from must be a valid Date");
   }
   getFormatter(timeZone);
@@ -343,22 +343,19 @@ export function nextRun(
   let month = start.month;
   let day = start.day;
 
-  for (let offset = 0; offset < MAX_SEARCH_DAYS; offset += 1) {
+  for (let dayOffset = 0; dayOffset < MAX_SEARCH_DAYS; dayOffset += 1) {
     const dayNumber = new Date(Date.UTC(year, month - 1, day));
     const weekday = dayNumber.getUTCDay();
     const domMatches = fields.dayOfMonth.includes(day);
     const dowMatches = fields.dayOfWeek.includes(weekday);
 
-    let dayMatches: boolean;
-    if (fields.dayOfMonthWildcard && fields.dayOfWeekWildcard) {
-      dayMatches = true;
-    } else if (fields.dayOfMonthWildcard) {
-      dayMatches = dowMatches;
-    } else if (fields.dayOfWeekWildcard) {
-      dayMatches = domMatches;
-    } else {
-      dayMatches = domMatches || dowMatches;
-    }
+    const bothRestricted =
+      !fields.dayOfMonthWildcard && !fields.dayOfWeekWildcard;
+    // Vixie semantics: two restricted day fields OR together; if either field
+    // starts with `*`, both must match (a stepped `*/n` still filters).
+    const dayMatches = bothRestricted
+      ? domMatches || dowMatches
+      : domMatches && dowMatches;
 
     if (fields.month.includes(month) && dayMatches) {
       for (const hour of fields.hour) {

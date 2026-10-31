@@ -150,6 +150,15 @@ describe("nextRun", () => {
     ).toEqual(utc("2026-01-12T00:00:00Z"));
   });
 
+  it.each([
+    ["0 0 */2 * *", "2026-01-03T00:00:00Z"],
+    ["0 0 * * */2", "2026-01-03T00:00:00Z"],
+  ])("applies a step to a starred day field (%s)", (expression, expected) => {
+    expect(
+      nextRun(expression, { from: utc("2026-01-01T00:00:00Z") }),
+    ).toEqual(utc(expected));
+  });
+
   it("matches Sunday for weekday 7", () => {
     expect(nextRun("0 0 * * 7", { from: utc("2026-01-01T00:00:00Z") })).toEqual(
       utc("2026-01-04T00:00:00Z"),
@@ -181,5 +190,10 @@ describe("nextRun", () => {
     expect(() => nextRun("* * * * *", { from: new Date("nope") })).toThrow(
       "from must be a valid Date",
     );
+    expect(() =>
+      nextRun("* * * * *", {
+        from: "2026-01-01" as unknown as Date,
+      }),
+    ).toThrow(CronError);
   });
 });

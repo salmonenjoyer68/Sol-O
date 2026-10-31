@@ -10,7 +10,7 @@ Sol-O is an early-stage Python project for a multi-agent orchestration platform.
   - `pip install -r requirements.txt` installs the Phase 1 runtime: `fastapi`, `uvicorn`, `openai`, `pydantic`, `python-dotenv`.
 - `pytest` and `ruff` are **not** installed in `.venv` (and `pytest` is not declared in `pyproject.toml`). Install them or use `uvx`.
 - `cp .env.example .env`; `app/llm.py` reads `BASE_URL`, `API_KEY`, `MODEL` from the repo-root `.env` **once at import time**. Restart the server after editing `.env`; prompt edits need no restart.
-- Run everything from the repo root. `app` is a top-level, non-installed package; the only installable package is `sol_o`.
+- Run Python commands from the repo root. `app` is a top-level, non-installed package; the only installable package is `sol_o`. The TypeScript utility is the exception: run it from `scripts/cron/`.
 
 ## Commands
 
