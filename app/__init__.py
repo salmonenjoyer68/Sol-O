@@ -1,0 +1,1 @@
+"""Sol-O application package."""

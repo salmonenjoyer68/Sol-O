@@ -5,8 +5,8 @@ Sol-O is an early-stage Python scaffold for a multi-agent orchestration platform
 ## Setup
 
 - Repo lives in WSL/Linux. The venv is Linux-layout: `source .venv/bin/activate` (ignore the README's Windows path).
-- `.venv` was created by uv 0.13.1 and `uv.lock` exists. Prefer `uv sync`; `pip install -e .` (README) also works.
-- Copy `.env.example` to `.env` for local secrets. `MODEL_PROVIDER`, `MODEL_NAME`, and `API_BASE_URL` are placeholders not yet read by code.
+- `.venv` was created by uv 0.13.1 and `uv.lock` exists. Prefer `uv sync`; `uv sync` does not install the Phase 1 API deps, so use `pip install -r requirements.txt` for those.
+- Copy `.env.example` to `.env` for local secrets. `BASE_URL`, `API_KEY`, and `MODEL` are read by `llm.py` (OpenAI-compatible endpoint).
 
 ## Commands
 
@@ -19,8 +19,8 @@ Sol-O is an early-stage Python scaffold for a multi-agent orchestration platform
 
 - `src/sol_o/` is the only installable package (`sol-o`), found via `[tool.setuptools.packages.find] where = ["src"]`. Import as `sol_o`.
 - Subpackages `data/`, `features/`, `models/`, `pipelines/`, `serving/`, `utils/` are empty placeholders. Put orchestration logic in `pipelines/`, service entrypoints in `app/`, workflow/model config in `configs/`.
-- `agent/*.md` are agent system prompts, one file per agent, not Python modules. The orchestrator is the "Sun"; agents are "planets". `agent/researcher.md` defines a strict JSON-only output contract (fixed keys and enum values) — preserve it when editing.
-- Runtime dependencies are only `langchain` and `langchain-openai`.
+- `agents/*.md` are agent system prompts, one file per agent, not Python modules. The orchestrator is the "Sun"; agents are "planets". `agents/researcher.md` defines a strict JSON-only output contract (fixed keys and enum values) — preserve it when editing.
+- Phase 1 lives in `app/`: `main.py` (FastAPI), `llm.py` (OpenAI-compatible client), `schemas.py` (Pydantic contracts); the terminal client is `tests/test_run.py` (`python -m tests.test_run "task"`). Dependencies are in `requirements.txt`; `pyproject.toml` still declares only `langchain` and `langchain-openai`.
 
 ## Conventions and gotchas
 

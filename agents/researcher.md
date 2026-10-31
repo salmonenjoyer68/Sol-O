@@ -83,3 +83,5 @@ Field constraints:
 - Every sub-question has a sourced finding or is listed in `gaps`.
 - Every finding has a URL or is marked `unverified`.
 - Output is valid JSON and nothing else.
+
+No search tool is available yet. Use only the task text; mark all claims unverified and list what you could not check in gaps.
