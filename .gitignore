@@ -17,15 +17,8 @@ credentials.json
 secrets.json
 service-account*.json
 
-# Data, models, and generated outputs
+# Generated data (the SQLite database lives here)
 data/**/*
-!data/**/.gitkeep
-models/**/*
-!models/**/.gitkeep
-artifacts/**/*
-!artifacts/**/.gitkeep
-experiments/**/*
-!experiments/**/.gitkeep
 
 # Tooling
 .pytest_cache/

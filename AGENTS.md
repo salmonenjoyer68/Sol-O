@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Sol-O is an early-stage Python project for a multi-agent orchestration platform. Phase 1 (single agent behind FastAPI) and Phase 2 (the Sun orchestrator) are implemented in `app/`; `src/sol_o/` and most other directories are still placeholders. Expect to write real implementation code, not just tweak scaffolds.
+Sol-O is a Python multi-agent orchestration platform. The Sun orchestrator and the Phase 1-6 features live in `app/` and `tools/`; the browser UI is the single file `web/index.html`. Write real implementation code, not scaffolds.
 
 ## Setup
 
@@ -10,11 +10,12 @@ Sol-O is an early-stage Python project for a multi-agent orchestration platform.
   - `pip install -r requirements.txt` installs the Phase 1 runtime: `fastapi`, `uvicorn`, `openai`, `pydantic`, `python-dotenv`.
 - `pytest` and `ruff` are **not** installed in `.venv` (and `pytest` is not declared in `pyproject.toml`). Install them or use `uvx`.
 - `cp .env.example .env`; `app/llm.py` reads `BASE_URL`, `API_KEY`, `MODEL` from the repo-root `.env` **once at import time**. Restart the server after editing `.env`; prompt edits need no restart.
-- Run Python commands from the repo root. `app` is a top-level, non-installed package; the only installable package is `sol_o`. The TypeScript utility is the exception: run it from `scripts/cron/`.
+- Run Python commands from the repo root. `app` and `tools` are top-level packages run from the repo root; the project itself is not installed into site-packages. The TypeScript utility is the exception: run it from `scripts/cron/`.
 
 ## Commands
 
 - API: `uvicorn app.main:app --reload` (open `http://127.0.0.1:8000/` for the live solar-system UI; `GET /stream` is the SSE feed)
+- CLI: `python -m app.cli "your task" [--plan] [--file path]`; also `--show <run_id>`, `--pending`, `--approve <id>`, `--reject <id>` (with no task it reads `TASK_DESCRIPTION` from `.env`).
 - Terminal client: `python -m tests.test_run "your task"` (posts to `http://127.0.0.1:8000/run`; override with `SOL_O_URL`). Requires the API to be running.
 - Tests: `python -m pytest` after `pip install pytest`. `testpaths = ["tests"]`; put tests in `tests/unit/` or `tests/integration/`. With no real test functions, `pytest` exits 5 ("no tests ran").
 - Lint: `uvx ruff check .` (config: `line-length = 100`, `target-version = "py310"`).
@@ -23,14 +24,13 @@ Sol-O is an early-stage Python project for a multi-agent orchestration platform.
 
 ## Layout and architecture
 
-- `src/sol_o/` is the only installable package (`sol-o`), found via `[tool.setuptools.packages.find] where = ["src"]`. Import as `sol_o`.
-- Subpackages `src/sol_o/{data,features,models,pipelines,serving,utils}/` are empty placeholders. Put orchestration logic in `pipelines/`, service entrypoints in `app/`, workflow/model config in `configs/`.
-- Code lives in `app/`: `main.py` (FastAPI: `/run`, `/orchestrate`, `/runs`, `/runs/{id}`, `/inbound`, `/pending`), `agents.py` (prompt loading, validation, retries), `orchestrator.py` (the Sun), `logger.py` (SQLite runs/calls/pending), `approvals.py` (approval gate), `config.py` (env settings), `reliability.py` (retries, deadline, redaction), `llm.py`, `schemas.py`. `app/` must stay importable as `app`, so do not move it under `src/`.
-- Root `main.py`, `sun.py`, and `test_run.py` are thin compatibility entry points (`uvicorn main:app`, `python sun.py "task" [--plan] [--file path]`, `python test_run.py "task"`), not copies of the app code. `sun.py` also handles `--show <run_id>`, `--pending`, `--approve <id>`, `--reject <id>`; with no task it reads `TASK_DESCRIPTION` from `.env`.
+- Code lives in `app/`: `main.py` (FastAPI: `/run`, `/orchestrate`, `/runs`, `/runs/{id}`, `/inbound`, `/pending`, `/stream`, `/`), `cli.py` (terminal entry point), `agents.py` (prompt loading, validation, retries), `orchestrator.py` (the Sun), `logger.py` (SQLite runs/calls/pending/events), `events.py` (event bus + SSE), `approvals.py` (approval gate), `config.py` (env settings), `reliability.py` (retries, deadline, redaction), `llm.py`, `schemas.py`. `app/` must stay importable as `app`.
+- `tools/` holds the code-run tools (`search.py`, `telegram.py`); `tests/` holds pytest tests plus the manual `test_run.py` HTTP client.
 - `agents/*.md` are agent system prompts, one file per agent, not Python modules. The orchestrator is the "Sun"; agents are "planets". `sun.md` is the planner prompt and is not a runnable planet.
 - `tests/test_run.py` is a manual HTTP client, not a pytest test. Real automated tests belong in `tests/unit/` or `tests/integration/`.
-- `scripts/cron/` is a self-contained TypeScript project (own `package.json`, lockfile, and `node_modules`, which is gitignored). Keep Node tooling there; do not mix it into `src/sol_o/`, the root, or the Python `tests/` tree.
+- `scripts/cron/` is a self-contained TypeScript project (own `package.json`, lockfile, and `node_modules`, which is gitignored). Keep Node tooling there; do not mix it into the Python packages or `tests/`.
 - `web/index.html` is the Phase 6 solar-system UI, served by FastAPI at `/`. Keep it a single self-contained file: no npm, bundler, or CDN libraries.
+- `data/` is created at runtime for `sol-o.db`; generated files under it are gitignored.
 
 ## Phase 1 contracts
 
@@ -75,7 +75,7 @@ Sol-O is an early-stage Python project for a multi-agent orchestration platform.
 
 - `requires-python = ">=3.10"` and ruff targets `py310`, but the checked-in venv is 3.12. Do not use 3.11+ syntax or stdlib (`tomllib`, `ExceptionGroup`, `StrEnum`, `typing.Self`); `X | None` is fine at 3.10.
 - Match existing style: `from __future__ import annotations` first, double quotes, 4-space indent, concise docstrings, small pure helpers (`parse_agent_output`, `load_system_prompt`).
-- Phase 1 is plain Python plus the `openai` SDK and `httpx` for tools. Do not introduce LangChain or another agent framework despite the `pyproject.toml` deps. Runtime deps go in `requirements.txt`; `httpx` is also in `pyproject.toml` so `uv run python sun.py` works.
-- `data/`, `models/`, `artifacts/`, and `experiments/` contents are gitignored (only `.gitkeep` is tracked). Do not commit datasets, checkpoints, or generated outputs.
+- Phase 1 is plain Python plus the `openai` SDK and `httpx` for tools. Do not introduce LangChain or another agent framework despite the `pyproject.toml` deps. Runtime deps go in `requirements.txt`; `httpx` is also in `pyproject.toml` so `uv run python -m app.cli` works.
+- `data/` contents are gitignored (the runtime SQLite database). Do not commit generated outputs.
 - `.env` is gitignored; never commit secrets. `.env.example` is the tracked template.
 - Project principles that affect design: keep agents single-purpose, validate outputs between stages, and require human approval before irreversible/high-impact actions.

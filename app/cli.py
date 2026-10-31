@@ -2,14 +2,14 @@
 """Terminal entry point for the Sun orchestrator.
 
 Usage:
-    python sun.py "task"                 # hardcoded researcher -> writer -> checker
-    python sun.py "task" --plan          # LLM-chosen plan from agents/sun.md
-    python sun.py --file examples/inquiry.txt  # read the task from a file
-    python sun.py                        # use TASK_DESCRIPTION from .env
-    python sun.py --pending              # list actions awaiting approval
-    python sun.py --approve <id>         # execute one stored action once
-    python sun.py --reject <id>          # reject one stored action
-    python sun.py --show <run_id>        # readable run timeline
+    python -m app.cli "task"                 # hardcoded researcher -> writer -> checker
+    python -m app.cli "task" --plan          # LLM-chosen plan from agents/sun.md
+    python -m app.cli --file examples/inquiry.txt  # read the task from a file
+    python -m app.cli                        # use TASK_DESCRIPTION from .env
+    python -m app.cli --pending              # list actions awaiting approval
+    python -m app.cli --approve <id>         # execute one stored action once
+    python -m app.cli --reject <id>          # reject one stored action
+    python -m app.cli --show <run_id>        # readable run timeline
 
 Logger and notifier always run last, so every run is saved to data/sol-o.db.
 """
@@ -29,7 +29,7 @@ from app import logger as run_store
 from app.orchestrator import orchestrate
 from app.reliability import install_redaction_filter
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 EXIT_CODES = {
     "complete": 0,
     "failed": 1,
@@ -129,7 +129,7 @@ def _decide(action_id: int, decision: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(
-        prog="sun.py",
+        prog="python -m app.cli",
         description="Run a task through the Sun orchestrator or manage approvals.",
     )
     parser.add_argument("task", nargs="*", help="the task to run")

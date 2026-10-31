@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import sun as sun_cli
 from app import approvals, orchestrator
+from app import cli as sun_cli
 from app import logger as run_store
 from app.config import settings as config_settings
 from app.main import app

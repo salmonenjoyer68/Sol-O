@@ -18,7 +18,7 @@ DEFAULT_URL = "http://127.0.0.1:8000/run"
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print('usage: python test_run.py "<task>"', file=sys.stderr)
+        print('usage: python -m tests.test_run "<task>"', file=sys.stderr)
         return 2
     task = " ".join(sys.argv[1:])
     url = os.getenv("SOL_O_URL", DEFAULT_URL)

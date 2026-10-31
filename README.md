@@ -19,17 +19,17 @@ Safety: `LLM_TIMEOUT_SECONDS` `LLM_MAX_RETRIES` `TOOL_TIMEOUT_SECONDS` `RUN_TIME
 
 ## Run
 ```bash
-uv run python sun.py "A customer asks: do you deliver on weekends?"
-uv run python sun.py --file examples/inquiry.txt && uv run python sun.py "task" --plan
-uv run uvicorn main:app
+uv run python -m app.cli "A customer asks: do you deliver on weekends?"
+uv run python -m app.cli --file examples/inquiry.txt && uv run python -m app.cli "task" --plan
+uv run uvicorn app.main:app
 ```
 
 ## Live UI
 Open `http://127.0.0.1:8000/` while the API runs: a canvas solar system shows planets appearing, working, and finishing from real backend events over SSE (`GET /stream`). The Run button queues `POST /orchestrate`; the replay dropdown reads `GET /runs/{id}/events`. When a run ends, a result window shows the final draft, clarification, failure or rejection (click the status pill to reopen it). Click a planet for its raw JSON, or approve/reject pending actions in the sun's approval panel. `web/index.html` is self-contained; no build step or CDN.
 
 ## Approvals
-`sun.py --pending | --approve <id> | --reject <id>`; API `GET /pending`, `POST /pending/{id}/approve|reject`. `DRY_RUN=true` prints.
+`python -m app.cli --pending | --approve <id> | --reject <id>`; API `GET /pending`, `POST /pending/{id}/approve|reject`. `DRY_RUN=true` prints.
 
 ## Failures
-`sun.py --show <run_id>`; `GET /runs?status=failed`, `GET /runs/{run_id}` show status, `failed_at`, `failure.error_type` and every call.
+`python -m app.cli --show <run_id>`; `GET /runs?status=failed`, `GET /runs/{run_id}` show status, `failed_at`, `failure.error_type` and every call.
 Tests: `uv run pytest && uvx ruff check .`
