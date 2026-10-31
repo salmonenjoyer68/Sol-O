@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="img/logo/sol-o.png" alt="Sol-O logo" width="320">
+  <img src="img/logo/image.png" alt="Sol-O logo" width="320">
 </p>
 
 # Sol-O
