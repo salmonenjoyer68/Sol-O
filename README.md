@@ -262,6 +262,7 @@ A business request would be decomposed as follows:
 ├── models/               # Model metadata and local checkpoints
 ├── notebooks/            # Exploration and analysis notebooks
 ├── scripts/              # Operational and automation scripts
+│   └── cron/             # Standalone TypeScript cron utility (vitest)
 ├── src/sol_o/            # Installable package (placeholders for later phases)
 │   ├── data/             # Ingestion and data validation
 │   ├── features/         # Feature extraction and transformations
@@ -291,6 +292,14 @@ Tests (install pytest first; it is not a project dependency yet):
 ```bash
 python -m pip install pytest
 python -m pytest
+```
+
+Cron utility tests (isolated TypeScript project):
+
+```bash
+cd scripts/cron
+npm install
+npm test
 ```
 
 Contributions should follow the Phase 1 contracts in `app/schemas.py`: every

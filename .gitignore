@@ -34,3 +34,8 @@ experiments/**/*
 .coverage
 htmlcov/
 .ipynb_checkpoints/
+node_modules/
+coverage/
+
+# Local process artifacts
+LOOP.md
