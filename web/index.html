@@ -1,0 +1,1390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sol-O · Solar Orchestrator</title>
+<style>
+  :root {
+    --bg: #05060d;
+    --fg: #e8ecff;
+    --muted: #8b95b8;
+    --border: rgba(142, 158, 220, 0.22);
+    --surface: rgba(12, 15, 32, 0.78);
+    --accent: #ffd36b;
+    --ok: #4ade80;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas#sky { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 58px; z-index: 20;
+    display: flex; align-items: center; gap: 10px; padding: 0 16px;
+    background: linear-gradient(180deg, rgba(4,5,12,0.92), rgba(4,5,12,0.45));
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(8px);
+  }
+  #topbar .brand {
+    font-weight: 800; letter-spacing: 0.28em; font-size: 12px; color: var(--accent);
+    text-shadow: 0 0 18px rgba(255, 196, 74, 0.45); white-space: nowrap;
+  }
+  #task {
+    flex: 1; min-width: 140px; height: 34px; border-radius: 8px;
+    border: 1px solid var(--border); background: rgba(8, 10, 24, 0.85);
+    color: var(--fg); padding: 0 12px; font-size: 13px; outline: none;
+  }
+  #task:focus { border-color: rgba(255, 211, 107, 0.55); box-shadow: 0 0 0 3px rgba(255, 211, 107, 0.1); }
+  button {
+    height: 34px; border-radius: 8px; border: 1px solid var(--border);
+    background: rgba(22, 27, 52, 0.9); color: var(--fg); font-size: 12px;
+    font-weight: 600; letter-spacing: 0.04em; padding: 0 14px; cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, transform .1s ease;
+  }
+  button:hover { border-color: rgba(255, 211, 107, 0.5); background: rgba(35, 41, 76, 0.95); }
+  button:active { transform: translateY(1px); }
+  #run { background: linear-gradient(180deg, #ffd36b, #f2a93b); color: #1a1203; border-color: transparent; }
+  #run:hover { filter: brightness(1.06); }
+  select#replay {
+    height: 34px; max-width: 250px; border-radius: 8px; border: 1px solid var(--border);
+    background: rgba(8, 10, 24, 0.85); color: var(--fg); font-size: 12px; padding: 0 8px;
+  }
+  .pill {
+    height: 26px; display: inline-flex; align-items: center; padding: 0 12px;
+    border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
+    border: 1px solid var(--border); background: rgba(8, 10, 24, 0.8);
+    color: var(--muted); white-space: nowrap;
+  }
+  .pill.planning { color: #93c5fd; border-color: rgba(96,165,250,.5); }
+  .pill.working { color: var(--accent); border-color: rgba(255,211,107,.55); box-shadow: 0 0 16px rgba(255,211,107,.16); }
+  .pill.complete { color: var(--ok); border-color: rgba(74,222,128,.5); }
+  .pill.failed { color: var(--bad); border-color: rgba(248,113,113,.55); }
+  .pill.awaiting { color: var(--accent); border-color: rgba(255,211,107,.6); }
+
+  #log {
+    position: fixed; left: 16px; bottom: 16px; z-index: 18; width: min(430px, 46vw);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 10px; font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px; line-height: 1.55; color: var(--muted);
+    backdrop-filter: blur(8px); max-height: 190px; overflow: hidden;
+  }
+  #log .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #log .line b { color: #c7d2fe; font-weight: 600; }
+  #log .line.failed b { color: var(--bad); }
+  #log .line.done b { color: var(--ok); }
+  #log .head {
+    display: flex; justify-content: space-between; align-items: center;
+    color: #c7d2fe; letter-spacing: .12em; font-size: 9px; margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+  #log .head button { height: 18px; padding: 0 7px; font-size: 9px; }
+
+  #approval {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 25;
+    width: min(520px, 92vw); background: var(--surface); border: 1px solid rgba(255,211,107,.5);
+    border-radius: 12px; padding: 14px; box-shadow: 0 0 40px rgba(255, 190, 60, 0.15);
+    backdrop-filter: blur(10px);
+  }
+  #approval .label { color: var(--accent); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
+  #approval-preview { font-size: 12px; line-height: 1.5; color: #dfe5ff; white-space: pre-wrap; max-height: 84px; overflow: auto; }
+  #approval .row { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+  #approve { background: rgba(74, 222, 128, .16); border-color: rgba(74,222,128,.5); color: #b9f6cf; }
+  #reject { background: rgba(248, 113, 113, .12); border-color: rgba(248,113,113,.45); color: #ffc9c9; }
+
+  #tooltip {
+    position: fixed; z-index: 30; pointer-events: none; max-width: 320px;
+    padding: 7px 10px; border-radius: 8px; font-size: 11px; line-height: 1.45;
+    color: #e8ecff; background: rgba(8, 10, 24, 0.94); border: 1px solid var(--border);
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
+  #panel {
+    position: fixed; top: 74px; right: 16px; z-index: 30; width: min(430px, 42vw);
+    max-height: calc(100vh - 120px); display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
+  }
+  #panel header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #c7d2fe;
+  }
+  #panel header button { height: 22px; width: 22px; padding: 0; font-size: 13px; line-height: 1; }
+  #panel-body {
+    margin: 0; padding: 12px; overflow: auto; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    font-size: 10.5px; line-height: 1.55; color: #cfd8ff; white-space: pre-wrap; word-break: break-word;
+  }
+
+  #output {
+    position: fixed; right: 16px; bottom: 16px; z-index: 26; width: min(460px, 44vw);
+    max-height: min(56vh, 520px); display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
+  }
+  #output header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+  }
+  #output header button { height: 22px; width: 22px; padding: 0; font-size: 13px; line-height: 1; }
+  #output-meta {
+    padding: 7px 12px 0; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+  #output-body {
+    padding: 10px 12px 14px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font-size: 12.5px; line-height: 1.6; color: #e6ebff;
+  }
+  #pill { cursor: pointer; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div id="topbar">
+  <div class="brand">SOL-O</div>
+  <input id="task" autocomplete="off" spellcheck="false"
+         placeholder="Give the Sun a task…">
+  <button id="run">Run</button>
+  <span id="pill" class="pill">IDLE</span>
+  <select id="replay"><option value="">Replay a run…</option></select>
+</div>
+
+<div id="log">
+  <div class="head"><span>Event log</span><button id="log-toggle">HIDE</button></div>
+  <div id="log-lines"></div>
+</div>
+
+<div id="approval" class="hidden">
+  <div class="label">Approval required · nothing has been sent</div>
+  <div id="approval-preview"></div>
+  <div class="row">
+    <button id="reject">Reject</button>
+    <button id="approve">Approve &amp; send</button>
+  </div>
+</div>
+
+<div id="tooltip" class="hidden"></div>
+
+<div id="panel" class="hidden">
+  <header><span id="panel-title">planet</span><button id="panel-close">×</button></header>
+  <pre id="panel-body"></pre>
+</div>
+
+<div id="output" class="hidden">
+  <header><span>Result</span><button id="output-close">×</button></header>
+  <div id="output-meta"></div>
+  <div id="output-body"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ */
+/* Canvas setup                                                        */
+/* ------------------------------------------------------------------ */
+
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d");
+const TAU = Math.PI * 2;
+let W = window.innerWidth;
+let H = window.innerHeight;
+let CX = W / 2;
+let CY = H * 0.52;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  CX = W / 2;
+  CY = H * 0.52;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  makeStars();
+}
+window.addEventListener("resize", resize);
+
+/* ------------------------------------------------------------------ */
+/* Visual constants                                                    */
+/* ------------------------------------------------------------------ */
+
+const STYLES = {
+  researcher: { color: "#43c6ff", size: 15, ring: false, moon: true },
+  writer:     { color: "#ff9f43", size: 14, ring: true,  moon: false },
+  checker:    { color: "#4ade80", size: 10, ring: false, moon: true },
+  logger:     { color: "#a78bfa", size: 10, ring: false, moon: false },
+  notifier:   { color: "#f472b6", size: 10, ring: true,  moon: false },
+};
+const FALLBACK = ["#60a5fa", "#fbbf24", "#34d399", "#f87171", "#c084fc", "#22d3ee", "#fb7185"];
+
+function styleFor(agent) {
+  if (STYLES[agent]) return STYLES[agent];
+  let hash = 0;
+  for (let i = 0; i < agent.length; i += 1) hash = (hash * 31 + agent.charCodeAt(i)) % 1000003;
+  return {
+    color: FALLBACK[hash % FALLBACK.length],
+    size: 10 + (hash % 5),
+    ring: hash % 3 === 0,
+    moon: hash % 4 === 0,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* State                                                               */
+/* ------------------------------------------------------------------ */
+
+const state = {
+  mode: "live",          // live | replay
+  follow: null,          // run id being visualised
+  runId: null,
+  sun: "idle",
+  detail: "",
+  plans: [],             // [{step, agent}]
+  planets: new Map(),    // "step:agent" -> planet
+  alignPhase: null,      // in | hold | out
+  alignStart: 0,
+  alignAmount: 0,
+  slowUntil: 0,
+  pending: null,
+  extraPlanets: 0,
+  log: [],
+  hover: null,
+  outputs: null,
+  outputsRun: null,
+  detailData: null,
+  detailRun: null,
+  lastSeconds: null,
+  lastStopReason: "",
+  lastFailure: null,
+  lastResultStatus: null,
+  replayTimers: [],
+  lastRunStatus: null,
+};
+
+let stars = [];
+let lastNow = performance.now();
+
+function makeStars() {
+  const count = 150 + Math.floor(Math.random() * 100);
+  stars = [];
+  for (let i = 0; i < count; i += 1) {
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.4 + Math.random() * 1.5,
+      phase: Math.random() * TAU,
+      speed: 0.6 + Math.random() * 1.8,
+      depth: 0.35 + Math.random() * 0.65,
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* DOM references                                                      */
+/* ------------------------------------------------------------------ */
+
+const taskInput = document.getElementById("task");
+const runButton = document.getElementById("run");
+const pill = document.getElementById("pill");
+const replaySelect = document.getElementById("replay");
+const logLines = document.getElementById("log-lines");
+const logToggle = document.getElementById("log-toggle");
+const logBox = document.getElementById("log");
+const approvalBox = document.getElementById("approval");
+const approvalPreview = document.getElementById("approval-preview");
+const approveBtn = document.getElementById("approve");
+const rejectBtn = document.getElementById("reject");
+const tooltip = document.getElementById("tooltip");
+const panel = document.getElementById("panel");
+const panelTitle = document.getElementById("panel-title");
+const panelBody = document.getElementById("panel-body");
+const panelClose = document.getElementById("panel-close");
+const outputBox = document.getElementById("output");
+const outputMeta = document.getElementById("output-meta");
+const outputBody = document.getElementById("output-body");
+const outputClose = document.getElementById("output-close");
+
+/* ------------------------------------------------------------------ */
+/* Small helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
+const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+function setSun(status, detail) {
+  // While an approval is pending, worker/tool events must not hide the gate.
+  if (state.pending && (status === "orchestrating" || status === "planning")) status = "awaiting";
+  state.sun = status;
+  state.detail = detail || "";
+  const label = status === "awaiting" ? "waiting for approval" : status;
+  pill.textContent = (state.mode === "replay" ? "REPLAY · " : "") + label.toUpperCase();
+  pill.className = "pill " + ({
+    planning: "planning",
+    orchestrating: "working",
+    working: "working",
+    complete: "complete",
+    partial: "failed",
+    failed: "failed",
+    awaiting: "awaiting",
+    rejected: "failed",
+    idle: "",
+  }[status] || "");
+}
+
+function pushLog(name, data) {
+  const time = new Date().toLocaleTimeString([], { hour12: false });
+  const text = summariseEvent(name, data);
+  state.log.push({ time, name, text, failed: /fail|error/i.test(name) });
+  if (state.log.length > 8) state.log.shift();
+  renderLog();
+}
+
+function renderLog() {
+  logLines.innerHTML = state.log.map((item) =>
+    `<div class="line ${item.failed ? "failed" : ""}">` +
+    `<b>${item.time}</b> ${escapeHtml(item.name)} · ${escapeHtml(item.text)}</div>`
+  ).join("");
+}
+
+function summariseEvent(name, data) {
+  if (!data) return "";
+  if (data.agent) {
+    const step = data.step != null ? `#${data.step} ` : "";
+    const extra = data.status || data.error_type || (data.attempt ? `attempt ${data.attempt}` : "");
+    return `${step}${data.agent}${extra ? " " + extra : ""}`;
+  }
+  if (name === "run_started") return String(data.task || "").slice(0, 90);
+  if (name === "plan_ready") return (data.agents || []).join(" → ");
+  if (name === "awaiting_approval") return `pending #${data.pending_id}`;
+  if (name === "approval_decided") return `${data.decision} #${data.pending_id}`;
+  if (name === "all_done") return `${data.status} in ${data.seconds}s`;
+  if (name === "run_failed") return `${data.error_type} at ${data.failed_at}`;
+  if (name === "search_done") return `${data.results} results`;
+  return JSON.stringify(data).slice(0, 90);
+}
+
+/* ------------------------------------------------------------------ */
+/* Planets                                                             */
+/* ------------------------------------------------------------------ */
+
+function orbitRadius(index) {
+  const span = Math.min(W, H * 1.7);
+  return Math.max(70, span * 0.14 + index * span * 0.045);
+}
+
+function orbitPosition(p) {
+  const index = p.orbitIndex != null ? p.orbitIndex : state.planets.size;
+  const radius = orbitRadius(index);
+  return {
+    x: CX + Math.cos(p.angle) * radius,
+    y: CY + Math.sin(p.angle) * radius * 0.55,
+  };
+}
+
+function alignPosition(p) {
+  const finished = [...state.planets.values()].filter((item) => item.appear > 0.05);
+  finished.sort((a, b) => a.step - b.step);
+  const index = Math.max(0, finished.findIndex((item) => item.key === p.key));
+  // Alternate sides so no planet sits on top of the Sun, while staying on one line.
+  const spacing = Math.min(150, (W * 0.38) / Math.max(1, Math.ceil(finished.length / 2)));
+  const distance = (Math.floor(index / 2) + 1) * spacing;
+  const side = index % 2 === 0 ? 1 : -1;
+  return { x: CX + side * distance, y: CY };
+}
+
+function planetPosition(p) {
+  const base = orbitPosition(p);
+  if (state.alignAmount > 0.001) {
+    const target = alignPosition(p);
+    const amount = easeInOut(state.alignAmount);
+    return {
+      x: base.x + (target.x - base.x) * amount,
+      y: base.y + (target.y - base.y) * amount,
+    };
+  }
+  return base;
+}
+
+function planetFor(step, agent, placeholder) {
+  const key = `${step}:${agent}`;
+  let planet = state.planets.get(key);
+  if (planet) return planet;
+  const style = styleFor(agent);
+  const planIndex = state.plans.findIndex(
+    (plan) => plan.step === step && plan.agent === agent
+  );
+  const orbitIndex = planIndex >= 0 ? planIndex : state.plans.length + state.extraPlanets;
+  if (planIndex < 0) state.extraPlanets += 1;
+  planet = {
+    key,
+    step,
+    agent,
+    orbitIndex,
+    color: style.color,
+    size: style.size,
+    ring: style.ring,
+    moon: style.moon,
+    angle: Math.random() * TAU,
+    speed: 0.09 + (step % 5) * 0.012,
+    appear: placeholder ? 0.28 : 0,
+    target: placeholder ? 0.28 : 1,
+    placeholder: Boolean(placeholder),
+    skipped: false,
+    working: false,
+    done: false,
+    failed: false,
+    summary: "",
+    attempts: 1,
+    error: "",
+    calledAt: 0,
+    doneAt: 0,
+    trailAt: 0,
+    sx: 0,
+    sy: 0,
+  };
+  state.planets.set(key, planet);
+  return planet;
+}
+
+function resetScene() {
+  state.plans = [];
+  state.planets.clear();
+  state.alignPhase = null;
+  state.alignAmount = 0;
+  state.pending = null;
+  state.outputs = null;
+  state.outputsRun = null;
+  state.detailData = null;
+  state.detailRun = null;
+  state.lastSeconds = null;
+  state.lastStopReason = "";
+  state.lastFailure = null;
+  state.lastResultStatus = null;
+  state.extraPlanets = 0;
+  state.log = [];
+  approvalBox.classList.add("hidden");
+  panel.classList.add("hidden");
+  outputBox.classList.add("hidden");
+  renderLog();
+  setSun("idle", "");
+}
+
+/* ------------------------------------------------------------------ */
+/* Event application (live and replay share this)                      */
+/* ------------------------------------------------------------------ */
+
+function applyEvent(record) {
+  const name = record.event;
+  const data = record.data || {};
+  if (record.run_id) state.runId = record.run_id;
+  const plannerEvent = data.agent === "sun" || data.step === 0;
+
+  switch (name) {
+    case "run_started": {
+      if (state.follow !== record.run_id) {
+        state.follow = record.run_id;
+        resetScene();
+        state.runId = record.run_id;
+      }
+      setSun("orchestrating", "run started");
+      break;
+    }
+    case "plan_ready": {
+      const agents = data.agents || (data.steps || []).map((item) => item.agent);
+      state.plans = agents.map((agent, index) => ({ step: index + 1, agent }));
+      state.planets.clear();
+      state.plans.forEach((plan) => planetFor(plan.step, plan.agent, true));
+      setSun("planning", `${agents.length} planets planned`);
+      break;
+    }
+    case "agent_called": {
+      if (plannerEvent) break;
+      const planet = planetFor(data.step, data.agent, false);
+      planet.placeholder = false;
+      planet.calledAt = performance.now();
+      planet.trailAt = planet.calledAt;
+      planet.target = 1;
+      setSun("orchestrating", `${data.agent} called`);
+      break;
+    }
+    case "agent_working": {
+      if (plannerEvent) {
+        setSun("planning", "planner working");
+        break;
+      }
+      const planet = planetFor(data.step, data.agent, false);
+      planet.working = true;
+      planet.attempts = Math.max(planet.attempts, data.attempt || 1);
+      setSun("orchestrating", `${data.agent} working${planet.attempts > 1 ? " · attempt " + planet.attempts : ""}`);
+      break;
+    }
+    case "agent_done": {
+      if (plannerEvent) break;
+      const planet = planetFor(data.step, data.agent, false);
+      planet.working = false;
+      planet.done = true;
+      planet.doneAt = performance.now();
+      planet.summary = data.summary || "";
+      if (data.attempts) planet.attempts = data.attempts;
+      break;
+    }
+    case "agent_failed": {
+      if (plannerEvent) {
+        setSun("failed", data.error_type || "failed");
+        break;
+      }
+      const planet = planetFor(data.step, data.agent, false);
+      planet.working = false;
+      planet.failed = true;
+      planet.error = `${data.error_type || data.error || "error"}: ${data.message || ""}`.trim();
+      state.slowUntil = performance.now() + 2500;
+      setSun("failed", data.error_type || "failed");
+      break;
+    }
+    case "awaiting_approval": {
+      state.pending = { id: data.pending_id, preview: data.preview || "" };
+      approvalPreview.textContent = data.preview || `Pending action #${data.pending_id}`;
+      approvalBox.classList.remove("hidden");
+      setSun("awaiting", `pending #${data.pending_id}`);
+      break;
+    }
+    case "approval_decided": {
+      state.pending = null;
+      approvalBox.classList.add("hidden");
+      const runStatus = data.run_status || (data.decision === "approved" ? "complete" : "rejected");
+      if (data.decision === "approved" && runStatus === "complete") {
+        setSun("complete", "approved");
+        startAlignment();
+      } else if (data.decision === "approved") {
+        setSun(runStatus, "approved");
+      } else {
+        setSun("rejected", data.decision);
+      }
+      showResult(data.decision === "approved" ? runStatus : "rejected");
+      break;
+    }
+    case "all_done": {
+      state.lastRunStatus = data.status;
+      state.lastSeconds = data.seconds != null ? data.seconds : null;
+      if (data.status === "complete") {
+        setSun("complete", `finished in ${data.seconds}s`);
+        startAlignment();
+      } else {
+        markSkipped();
+        setSun(data.status || "complete", data.status || "");
+      }
+      showResult(data.status);
+      refreshRuns();
+      break;
+    }
+    case "stopped": {
+      state.lastStopReason = data.reason || "";
+      markSkipped();
+      break;
+    }
+    case "run_failed": {
+      state.lastFailure = data;
+      const failed = [...state.planets.values()].find((planet) => planet.agent === data.failed_at);
+      if (failed) {
+        failed.failed = true;
+        failed.working = false;
+        failed.error = `${data.error_type}: ${data.message || ""}`;
+      }
+      state.slowUntil = performance.now() + 2500;
+      setSun("failed", data.error_type || "failed");
+      showResult("failed", data);
+      refreshRuns();
+      break;
+    }
+    default:
+      break;
+  }
+  pushLog(name, data);
+}
+
+function markSkipped() {
+  for (const planet of state.planets.values()) {
+    if (planet.placeholder && !planet.done && !planet.failed && !planet.working) {
+      planet.skipped = true;
+      planet.target = 0.06;
+    }
+  }
+}
+
+function startAlignment() {
+  state.alignPhase = "in";
+  state.alignStart = performance.now();
+  state.alignAmount = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Live SSE                                                            */
+/* ------------------------------------------------------------------ */
+
+const BOOT_AT = Date.now();
+
+function handleLive(record) {
+  if (state.mode !== "live") return;
+  // Skip the historical backlog a fresh tab receives; keep anything from this page's lifetime.
+  const stamp = Date.parse(record.ts);
+  if (state.follow === null && Number.isFinite(stamp) && stamp < BOOT_AT - 2500) return;
+  if (!state.follow) {
+    state.follow = record.run_id;
+    state.runId = record.run_id;
+  }
+  if (record.run_id !== state.follow) return;
+  applyEvent(record);
+}
+
+function connectStream() {
+  const source = new EventSource("/stream");
+  source.onmessage = (message) => {
+    try {
+      handleLive(JSON.parse(message.data));
+    } catch (error) {
+      console.warn("bad event", error);
+    }
+  };
+  source.onerror = () => {
+    /* EventSource reconnects and replays via Last-Event-ID automatically. */
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Run / replay / approvals                                            */
+/* ------------------------------------------------------------------ */
+
+async function startRun() {
+  const task = taskInput.value.trim();
+  if (!task) {
+    taskInput.focus();
+    return;
+  }
+  clearReplayTimers();
+  state.mode = "live";
+  state.follow = null;
+  state.runId = null;
+  resetScene();
+  setSun("orchestrating", "queued");
+
+  try {
+    const response = await fetch("/orchestrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || body.error || "run rejected");
+    state.follow = body.run_id;
+    state.runId = body.run_id;
+    pushLog("run_queued", { task: body.run_id });
+  } catch (error) {
+    setSun("failed", String(error.message || error));
+    pushLog("error", { message: String(error.message || error) });
+  }
+}
+
+function clearReplayTimers() {
+  state.replayTimers.forEach((timer) => clearTimeout(timer));
+  state.replayTimers = [];
+}
+
+async function replayRun(runId) {
+  if (!runId) return;
+  clearReplayTimers();
+  state.mode = "replay";
+  state.follow = runId;
+  state.runId = runId;
+  resetScene();
+  pill.textContent = "REPLAY · LOADING";
+  pill.className = "pill working";
+
+  try {
+    const response = await fetch(`/runs/${runId}/events`);
+    if (!response.ok) throw new Error("could not load events");
+    const records = await response.json();
+    if (!records.length) {
+      pill.textContent = "REPLAY · EMPTY";
+      return;
+    }
+    let elapsed = 0;
+    let previous = null;
+    records.forEach((record) => {
+      let gap = 0;
+      if (previous) {
+        const delta = Date.parse(record.ts) - Date.parse(previous.ts);
+        gap = Number.isFinite(delta) ? clamp(delta, 0, 1500) : 0;
+      }
+      previous = record;
+      elapsed += gap;
+      const timer = setTimeout(() => {
+        applyEvent(record);
+      }, elapsed);
+      state.replayTimers.push(timer);
+    });
+  } catch (error) {
+    pill.textContent = "REPLAY · ERROR";
+    pill.className = "pill failed";
+    pushLog("error", { message: String(error.message || error) });
+  }
+}
+
+async function decide(kind) {
+  if (!state.pending) return;
+  const id = state.pending.id;
+  try {
+    const response = await fetch(`/pending/${id}/${kind}`, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || body.error || "decision failed");
+    pushLog(`approval_${kind}`, { pending_id: id, status: body.status });
+  } catch (error) {
+    pushLog("error", { message: String(error.message || error) });
+  }
+}
+
+async function refreshRuns() {
+  try {
+    const response = await fetch("/runs?limit=25");
+    const rows = await response.json();
+    const current = replaySelect.value;
+    replaySelect.innerHTML = '<option value="">Replay a run…</option>' + rows.map((row) => {
+      const when = (row.created_at || "").replace("T", " ").slice(0, 16);
+      const label = `${when} · ${row.status} · ${(row.task || "").slice(0, 42)}`;
+      return `<option value="${escapeHtml(row.id)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    if (current) replaySelect.value = current;
+  } catch (error) {
+    /* the dropdown is best-effort */
+  }
+}
+
+async function loadRunDetail(force) {
+  if (!state.runId) throw new Error("No run id yet.");
+  if (!force && state.detailData && state.detailRun === state.runId) {
+    return state.detailData;
+  }
+  const response = await fetch(`/runs/${state.runId}`);
+  if (!response.ok) throw new Error("run has not been saved yet");
+  const detail = await response.json();
+  state.detailData = detail;
+  state.detailRun = state.runId;
+  state.outputs = (detail.run && detail.run.outputs) || [];
+  state.outputsRun = state.runId;
+  return detail;
+}
+
+function lastWriterDraft(outputs) {
+  for (let i = outputs.length - 1; i >= 0; i -= 1) {
+    const item = outputs[i] || {};
+    const out = item.output || {};
+    if (item.agent === "writer" && out.draft) return String(out.draft);
+  }
+  return "";
+}
+
+function lastClarification(outputs) {
+  for (let i = outputs.length - 1; i >= 0; i -= 1) {
+    const out = (outputs[i] || {}).output || {};
+    if (out.clarification_needed) return String(out.clarification_needed);
+  }
+  return "";
+}
+
+function lastCheckerIssues(outputs) {
+  for (let i = outputs.length - 1; i >= 0; i -= 1) {
+    const item = outputs[i] || {};
+    if (item.agent !== "checker") continue;
+    const issues = (item.output || {}).issues;
+    if (Array.isArray(issues)) return issues;
+  }
+  return [];
+}
+
+async function showResult(status, data) {
+  state.lastResultStatus = status;
+  outputBox.classList.remove("hidden");
+  outputBody.textContent = "loading…";
+  outputMeta.textContent = String(status).toUpperCase();
+
+  let run = null;
+  let outputs = [];
+  try {
+    const detail = await loadRunDetail(true);
+    run = detail.run || null;
+    outputs = (run && run.outputs) || [];
+  } catch (error) {
+    /* fall back to what the event stream told us */
+  }
+
+  const seconds = state.lastSeconds != null ? state.lastSeconds : run ? run.duration_seconds : null;
+  const bits = [String(status).toUpperCase()];
+  if (seconds != null) bits.push(`${seconds}s`);
+  if (run && run.verdict) bits.push(`checker: ${run.verdict}`);
+  if (state.runId) bits.push(state.runId.slice(0, 8));
+  outputMeta.textContent = bits.join(" · ");
+
+  let text = "";
+  if (status === "complete") {
+    text = (run && run.final_draft) || lastWriterDraft(outputs) || "Run completed, but no draft was stored.";
+  } else if (status === "partial") {
+    text = (run && run.final_draft) || lastWriterDraft(outputs) || "(no draft)";
+    const issues = lastCheckerIssues(outputs);
+    if (issues.length) {
+      text += "\n\nChecker issues:\n" + issues.map((issue) => {
+        const where = issue.location ? ` (${issue.location})` : "";
+        const fix = issue.suggestion ? `\n   → ${issue.suggestion}` : "";
+        return `• ${issue.problem}${where}${fix}`;
+      }).join("\n");
+    }
+  } else if (status === "needs_clarification") {
+    text = lastClarification(outputs) || state.lastStopReason
+      || (data && data.message) || "The agent needs more information.";
+    const draft = lastWriterDraft(outputs);
+    if (draft) text += "\n\nDraft so far:\n" + draft;
+  } else if (status === "rejected") {
+    text = "Rejected. Nothing was sent.";
+    const draft = (run && run.final_draft) || lastWriterDraft(outputs);
+    if (draft) text += "\n\nDraft (not sent):\n" + draft;
+  } else if (status === "failed") {
+    const failure = state.lastFailure || {};
+    text = [failure.error_type, failure.failed_at ? `at ${failure.failed_at}` : "", failure.message]
+      .filter(Boolean).join(" · ") || "Run failed.";
+  } else {
+    text = `Status: ${status}`;
+  }
+
+  outputBody.textContent = text;
+  outputBox.scrollTop = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Planet detail panel                                                 */
+/* ------------------------------------------------------------------ */
+
+async function openPlanet(planet) {
+  panel.classList.remove("hidden");
+  panelTitle.textContent = `${planet.agent} · step ${planet.step}`;
+  panelBody.textContent = "loading…";
+  if (!state.runId) {
+    panelBody.textContent = "No run id yet.";
+    return;
+  }
+  try {
+    const detail = await loadRunDetail(!state.outputs || !state.outputs.length);
+    const outputs = (detail.run && detail.run.outputs) || [];
+    const found =
+      outputs.find((item) => item.step === planet.step && item.agent === planet.agent) ||
+      outputs.find((item) => item.agent === planet.agent);
+    panelBody.textContent = JSON.stringify(
+      found ? (found.output !== undefined ? found.output : found) : {
+        agent: planet.agent,
+        step: planet.step,
+        status: planet.failed ? "failed" : planet.done ? "complete" : "working",
+        summary: planet.summary,
+        error: planet.error || undefined,
+      },
+      null,
+      2
+    );
+  } catch (error) {
+    panelBody.textContent = String(error.message || error);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Rendering                                                           */
+/* ------------------------------------------------------------------ */
+
+function drawBackground(now) {
+  const gradient = ctx.createLinearGradient(0, 0, W, H);
+  gradient.addColorStop(0, "#04050c");
+  gradient.addColorStop(0.55, "#070713");
+  gradient.addColorStop(1, "#0c0a1e");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+
+  const nebulaA = ctx.createRadialGradient(W * 0.22, H * 0.2, 0, W * 0.22, H * 0.2, Math.max(W, H) * 0.5);
+  nebulaA.addColorStop(0, "rgba(96, 68, 190, 0.20)");
+  nebulaA.addColorStop(0.5, "rgba(52, 40, 120, 0.08)");
+  nebulaA.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = nebulaA;
+  ctx.fillRect(0, 0, W, H);
+
+  const nebulaB = ctx.createRadialGradient(W * 0.82, H * 0.75, 0, W * 0.82, H * 0.75, Math.max(W, H) * 0.42);
+  nebulaB.addColorStop(0, "rgba(30, 90, 160, 0.14)");
+  nebulaB.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = nebulaB;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const star of stars) {
+    const twinkle = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.001 * star.speed + star.phase));
+    ctx.globalAlpha = twinkle * star.depth;
+    ctx.fillStyle = "#dbe4ff";
+    ctx.beginPath();
+    ctx.arc(star.x, star.y, star.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawOrbitRings() {
+  state.plans.forEach((plan, index) => {
+    const radius = orbitRadius(index);
+    ctx.beginPath();
+    ctx.ellipse(CX, CY, radius, radius * 0.55, 0, 0, TAU);
+    ctx.strokeStyle = "rgba(146, 164, 224, 0.11)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 7]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+}
+
+function drawSun(now) {
+  const pulse = 0.5 + 0.5 * Math.sin(now * 0.0011);
+  const core = 32 + pulse * 3;
+
+  const corona = ctx.createRadialGradient(CX, CY, core * 0.4, CX, CY, core * 5.2);
+  corona.addColorStop(0, `rgba(255, 224, 138, ${0.55 + pulse * 0.12})`);
+  corona.addColorStop(0.22, "rgba(255, 178, 64, 0.26)");
+  corona.addColorStop(0.55, "rgba(255, 120, 32, 0.10)");
+  corona.addColorStop(1, "rgba(255, 90, 0, 0)");
+  ctx.fillStyle = corona;
+  ctx.beginPath();
+  ctx.arc(CX, CY, core * 5.2, 0, TAU);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(CX, CY);
+  ctx.rotate(now * 0.00004);
+  for (let i = 0; i < 14; i += 1) {
+    const angle = (i / 14) * TAU;
+    const length = core * (2.4 + 0.6 * Math.sin(now * 0.0007 + i));
+    ctx.strokeStyle = `rgba(255, 208, 120, ${0.05 + 0.04 * pulse})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(angle) * core * 1.35, Math.sin(angle) * core * 1.35);
+    ctx.lineTo(Math.cos(angle) * length, Math.sin(angle) * length);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const body = ctx.createRadialGradient(CX - core * 0.3, CY - core * 0.32, core * 0.08, CX, CY, core);
+  body.addColorStop(0, "#fffdee");
+  body.addColorStop(0.38, "#ffe27a");
+  body.addColorStop(0.72, "#ffab3d");
+  body.addColorStop(1, "#ff6a00");
+  ctx.save();
+  ctx.shadowColor = "rgba(255, 176, 60, 0.85)";
+  ctx.shadowBlur = 42 + pulse * 22;
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.arc(CX, CY, core, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+
+  if (state.pending) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 208, 96, ${0.35 + 0.4 * pulse})`;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(CX, CY, core * 1.9 + pulse * 7, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255, 245, 214, 0.92)";
+  ctx.font = "700 15px Inter, system-ui, sans-serif";
+  ctx.fillText("SUN", CX, CY + core + 36);
+  ctx.fillStyle = "rgba(190, 202, 245, 0.72)";
+  ctx.font = "500 10.5px 'JetBrains Mono', ui-monospace, monospace";
+  const statusText = state.pending
+    ? "waiting for approval"
+    : state.detail
+      ? `${state.sun} · ${state.detail}`
+      : state.sun;
+  ctx.fillText(statusText.slice(0, 58), CX, CY + core + 52);
+  ctx.textAlign = "left";
+}
+
+function drawBeam(planet, position, now) {
+  if (!planet.working) return;
+  const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + planet.step);
+  const gradient = ctx.createLinearGradient(CX, CY, position.x, position.y);
+  gradient.addColorStop(0, `rgba(255, 216, 120, ${0.55 + 0.2 * pulse})`);
+  gradient.addColorStop(1, `${planet.color}00`);
+  ctx.save();
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 1.4 + pulse * 0.8;
+  ctx.shadowColor = planet.color;
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(CX, CY);
+  ctx.lineTo(position.x, position.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTrail(planet, position, now) {
+  const age = now - planet.trailAt;
+  if (!planet.trailAt || age > 850) return;
+  const alpha = (1 - age / 850) * 0.55;
+  const gradient = ctx.createLinearGradient(CX, CY, position.x, position.y);
+  gradient.addColorStop(0, `rgba(255, 226, 150, ${alpha * 0.2})`);
+  gradient.addColorStop(1, `rgba(255, 226, 150, ${alpha})`);
+  ctx.save();
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.moveTo(CX, CY);
+  ctx.lineTo(position.x, position.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPlanet(planet, position, now) {
+  const appear = easeOut(clamp(planet.appear, 0, 1));
+  if (appear <= 0.01) return;
+  const size = planet.size * (0.55 + 0.45 * appear);
+  const pulse = 0.5 + 0.5 * Math.sin(now * 0.005 + planet.step * 1.7);
+  const flicker = planet.failed ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
+  const color = planet.failed ? "#ff5d5d" : planet.color;
+  const glow = planet.working ? 26 + pulse * 18 : planet.done ? 14 : 9;
+
+  ctx.save();
+  ctx.globalAlpha = appear * flicker;
+
+  const halo = ctx.createRadialGradient(position.x, position.y, size * 0.3, position.x, position.y, size * 3.4);
+  halo.addColorStop(0, hexAlpha(color, planet.working ? 0.42 : 0.22));
+  halo.addColorStop(1, hexAlpha(color, 0));
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(position.x, position.y, size * 3.4, 0, TAU);
+  ctx.fill();
+
+  if (planet.ring) {
+    ctx.save();
+    ctx.translate(position.x, position.y);
+    ctx.rotate(-0.42 + Math.sin(now * 0.0004 + planet.step) * 0.05);
+    ctx.strokeStyle = hexAlpha(color, 0.5);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size * 1.9, size * 0.62, 0, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = glow;
+  const surface = ctx.createRadialGradient(
+    position.x - size * 0.35, position.y - size * 0.4, size * 0.1,
+    position.x, position.y, size
+  );
+  surface.addColorStop(0, lighten(color, 0.45));
+  surface.addColorStop(0.55, color);
+  surface.addColorStop(1, darken(color, 0.45));
+  ctx.fillStyle = surface;
+  ctx.beginPath();
+  ctx.arc(position.x, position.y, size, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+
+  if (planet.moon) {
+    const moonAngle = planet.angle * 2.6 + now * 0.0006;
+    const moonX = position.x + Math.cos(moonAngle) * size * 2.1;
+    const moonY = position.y + Math.sin(moonAngle) * size * 1.2;
+    ctx.fillStyle = "rgba(214, 224, 255, 0.75)";
+    ctx.beginPath();
+    ctx.arc(moonX, moonY, Math.max(1.2, size * 0.16), 0, TAU);
+    ctx.fill();
+  }
+
+  if (planet.done && !planet.failed) {
+    ctx.strokeStyle = `rgba(116, 255, 178, ${0.55 + 0.35 * pulse})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(position.x, position.y, size * 1.55, 0, TAU);
+    ctx.stroke();
+    ctx.strokeStyle = "#9ef7c1";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(position.x + size * 1.3, position.y - size * 1.3);
+    ctx.lineTo(position.x + size * 1.6, position.y - size * 1.0);
+    ctx.lineTo(position.x + size * 2.1, position.y - size * 1.75);
+    ctx.stroke();
+  }
+
+  if (planet.failed) {
+    ctx.strokeStyle = "#ffd0d0";
+    ctx.lineWidth = 2;
+    const offset = size * 0.75;
+    ctx.beginPath();
+    ctx.moveTo(position.x - offset, position.y - offset);
+    ctx.lineTo(position.x + offset, position.y + offset);
+    ctx.moveTo(position.x + offset, position.y - offset);
+    ctx.lineTo(position.x - offset, position.y + offset);
+    ctx.stroke();
+  }
+
+  if (planet.attempts > 1) {
+    const label = `attempt ${planet.attempts}`;
+    ctx.font = "600 9px Inter, system-ui, sans-serif";
+    const width = ctx.measureText(label).width + 10;
+    ctx.fillStyle = "rgba(8, 10, 24, 0.85)";
+    ctx.strokeStyle = hexAlpha(color, 0.7);
+    ctx.lineWidth = 1;
+    roundRect(position.x - width / 2, position.y - size - 20, width, 14, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e8ecff";
+    ctx.textAlign = "center";
+    ctx.fillText(label, position.x, position.y - size - 9.5);
+    ctx.textAlign = "left";
+  }
+
+  ctx.fillStyle = "rgba(223, 231, 255, 0.86)";
+  ctx.font = "600 10px Inter, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(planet.agent, position.x, position.y + size + 15);
+  ctx.textAlign = "left";
+  ctx.restore();
+
+  planet.sx = position.x;
+  planet.sy = position.y;
+}
+
+function drawAlignmentFlash(now) {
+  if (state.alignPhase !== "hold") return;
+  const pulse = 0.6 + 0.4 * Math.sin(now * 0.008);
+  const gradient = ctx.createLinearGradient(0, CY, W, CY);
+  gradient.addColorStop(0, "rgba(255, 205, 90, 0)");
+  gradient.addColorStop(0.5, `rgba(255, 225, 140, ${0.5 * pulse})`);
+  gradient.addColorStop(1, "rgba(255, 205, 90, 0)");
+  ctx.save();
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 3 + pulse * 2;
+  ctx.shadowColor = "rgba(255, 210, 110, 0.8)";
+  ctx.shadowBlur = 26;
+  ctx.beginPath();
+  ctx.moveTo(0, CY);
+  ctx.lineTo(W, CY);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function roundRect(x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, radius);
+  ctx.arcTo(x + width, y + height, x, y + height, radius);
+  ctx.arcTo(x, y + height, x, y, radius);
+  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.closePath();
+}
+
+function hexAlpha(hex, alpha) {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function lighten(hex, amount) {
+  return mix(hex, 255, amount);
+}
+
+function darken(hex, amount) {
+  return mix(hex, 0, amount);
+}
+
+function mix(hex, target, amount) {
+  const value = hex.replace("#", "");
+  const channels = [0, 2, 4].map((offset) => {
+    const channel = parseInt(value.slice(offset, offset + 2), 16);
+    return Math.round(channel + (target - channel) * amount);
+  });
+  return `rgb(${channels.join(",")})`;
+}
+
+function updateAnimation(now) {
+  const dt = Math.min(64, now - lastNow);
+  lastNow = now;
+  const slowed = now < state.slowUntil;
+  const aligning = state.alignPhase !== null;
+
+  for (const planet of state.planets.values()) {
+    const speed = planet.speed * (slowed ? 0.25 : 1) * (aligning ? 0 : 1);
+    planet.angle += speed * (dt / 1000);
+    const rate = 1 - Math.pow(0.001, dt / 1000);
+    planet.appear += (planet.target - planet.appear) * rate;
+  }
+
+  if (state.alignPhase === "in") {
+    const t = clamp((now - state.alignStart) / 1200, 0, 1);
+    state.alignAmount = easeInOut(t);
+    if (t >= 1) {
+      state.alignPhase = "hold";
+      state.alignStart = now;
+    }
+  } else if (state.alignPhase === "hold") {
+    state.alignAmount = 1;
+    if (now - state.alignStart > 3000) {
+      state.alignPhase = "out";
+      state.alignStart = now;
+    }
+  } else if (state.alignPhase === "out") {
+    const t = clamp((now - state.alignStart) / 1200, 0, 1);
+    state.alignAmount = 1 - easeInOut(t);
+    if (t >= 1) {
+      state.alignPhase = null;
+      state.alignAmount = 0;
+    }
+  }
+}
+
+function draw(now) {
+  updateAnimation(now);
+  drawBackground(now);
+  drawOrbitRings();
+
+  const ordered = [...state.planets.values()].sort((a, b) => {
+    const pa = orbitPosition(a);
+    const pb = orbitPosition(b);
+    return pa.y - pb.y;
+  });
+
+  ordered.forEach((planet) => {
+    drawTrail(planet, planetPosition(planet), now);
+    drawBeam(planet, planetPosition(planet), now);
+  });
+
+  drawSun(now);
+  ordered.forEach((planet) => drawPlanet(planet, planetPosition(planet), now));
+  drawAlignmentFlash(now);
+}
+
+let rafId = null;
+
+function loop(now) {
+  draw(now);
+  rafId = requestAnimationFrame(loop);
+}
+
+function startLoop() {
+  if (rafId === null) {
+    lastNow = performance.now();
+    rafId = requestAnimationFrame(loop);
+  }
+}
+
+function stopLoop() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopLoop();
+  else startLoop();
+});
+
+/* ------------------------------------------------------------------ */
+/* Pointer interaction                                                 */
+/* ------------------------------------------------------------------ */
+
+let pointer = { x: 0, y: 0 };
+
+canvas.addEventListener("mousemove", (event) => {
+  pointer = { x: event.clientX, y: event.clientY };
+  let found = null;
+  for (const planet of state.planets.values()) {
+    if (!planet.sx) continue;
+    const dx = event.clientX - planet.sx;
+    const dy = event.clientY - planet.sy;
+    if (Math.hypot(dx, dy) < planet.size + 8) {
+      found = planet;
+      break;
+    }
+  }
+  state.hover = found;
+
+  if (found && (found.summary || found.error)) {
+    tooltip.textContent = found.error || found.summary;
+    tooltip.style.left = `${event.clientX + 16}px`;
+    tooltip.style.top = `${event.clientY + 16}px`;
+    tooltip.classList.remove("hidden");
+  } else {
+    tooltip.classList.add("hidden");
+  }
+});
+
+canvas.addEventListener("mouseleave", () => {
+  state.hover = null;
+  tooltip.classList.add("hidden");
+});
+
+canvas.addEventListener("click", () => {
+  if (state.hover) openPlanet(state.hover);
+});
+
+canvas.style.cursor = "default";
+setInterval(() => {
+  canvas.style.cursor = state.hover ? "pointer" : "default";
+}, 250);
+
+/* ------------------------------------------------------------------ */
+/* Wiring                                                              */
+/* ------------------------------------------------------------------ */
+
+runButton.addEventListener("click", startRun);
+taskInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") startRun();
+});
+replaySelect.addEventListener("change", (event) => replayRun(event.target.value));
+approveBtn.addEventListener("click", () => decide("approve"));
+rejectBtn.addEventListener("click", () => decide("reject"));
+panelClose.addEventListener("click", () => panel.classList.add("hidden"));
+outputClose.addEventListener("click", () => outputBox.classList.add("hidden"));
+pill.addEventListener("click", () => {
+  if (state.runId && state.lastResultStatus) showResult(state.lastResultStatus);
+});
+logToggle.addEventListener("click", () => {
+  const lines = document.getElementById("log-lines");
+  const hidden = lines.classList.toggle("hidden");
+  logToggle.textContent = hidden ? "SHOW" : "HIDE";
+  logBox.style.maxHeight = hidden ? "34px" : "190px";
+});
+
+/* ------------------------------------------------------------------ */
+/* Boot                                                                */
+/* ------------------------------------------------------------------ */
+
+resize();
+resetScene();
+setSun("idle", "");
+refreshRuns();
+connectStream();
+startLoop();
+</script>
+</body>
+</html>

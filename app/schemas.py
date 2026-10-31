@@ -1,7 +1,8 @@
-"""Pydantic contracts for the Phase 1 agent API."""
+"""Pydantic contracts for the agent API and orchestration (Phases 1-5)."""
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -80,6 +81,28 @@ class CheckerOutput(BaseModel):
     clarification_needed: str | None
 
 
+class FailureType(str, Enum):
+    """Structured failure categories recorded for every hard agent/tool failure."""
+
+    INVALID_JSON = "invalid_json"
+    SCHEMA_MISMATCH = "schema_mismatch"
+    TIMEOUT = "timeout"
+    LLM_ERROR = "llm_error"
+    TOOL_ERROR = "tool_error"
+
+
+class Failure(BaseModel):
+    """One structured failure, safe to log and return to callers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str
+    error_type: FailureType
+    message: str
+    raw_output: str = ""
+    attempts: int = 0
+
+
 class OrchestrationRequest(BaseModel):
     """Request body for POST /orchestrate."""
 
@@ -120,15 +143,44 @@ class StepResult(BaseModel):
 
 
 class OrchestrationResult(BaseModel):
-    """Result of one Sun run, including partial outputs when it stopped early."""
+    """Result of one Sun run, including partial outputs and structured failures."""
 
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["complete", "failed", "needs_clarification"]
+    status: Literal[
+        "complete",
+        "partial",
+        "failed",
+        "needs_clarification",
+        "awaiting_approval",
+        "rejected",
+    ]
     task: str
     planner: Literal["hardcoded", "llm"]
     plan: list[PlanStep]
     outputs: list[StepResult]
     stopped_at: str | None
     reason: str | None
+    failed_at: str | None = None
+    failure: Failure | None = None
+    warning: str | None = None
+    run_id: str | None = None
     duration_seconds: float
+
+
+class InboundRequest(BaseModel):
+    """Request body for POST /inbound (Phase 4 real input)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1)
+    source: str = "unknown"
+
+
+class InboundResponse(BaseModel):
+    """Accepted inbound message; the run continues in the background."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    status: Literal["accepted"] = "accepted"

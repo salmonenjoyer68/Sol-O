@@ -10,20 +10,22 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.config import settings
 from app.llm import LLMError, LLMTimeoutError, call_llm
-from app.schemas import AgentOutput
+from app.reliability import redact
+from app.schemas import AgentOutput, FailureType
 
 logger = logging.getLogger("sol_o.agents")
 
 AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-MAX_ATTEMPTS = 3  # initial call + 2 retries
 FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 PLANNER_AGENT = "sun"
 
@@ -79,15 +81,27 @@ class AgentNotFoundError(LookupError):
         self.agent = agent
 
 
+class OutputParseError(ValueError):
+    """The model's response was not the JSON object the agent contract requires."""
+
+    def __init__(self, error_type: FailureType, message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+
+
 class AgentRunError(RuntimeError):
     """An agent call failed: provider error, timeout, or invalid output after retries."""
 
-    def __init__(self, kind: str, detail: str, *, attempts: int, raw: str = "") -> None:
+    def __init__(
+        self, error_type: FailureType, detail: str, *, attempts: int, raw: str = ""
+    ) -> None:
+        detail = redact(detail)
         super().__init__(detail)
-        self.kind = kind
+        self.error_type = error_type
+        self.kind = error_type.value
         self.detail = detail
         self.attempts = attempts
-        self.raw = raw
+        self.raw = redact(raw)
 
 
 @dataclass
@@ -119,13 +133,16 @@ def parse_output(raw: str, model: type[OutputModel]) -> OutputModel:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})"
+        raise OutputParseError(
+            FailureType.INVALID_JSON,
+            f"invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})",
         ) from exc
     try:
         return model.model_validate(data)
     except ValidationError as exc:
-        raise ValueError(f"schema validation failed: {exc}") from exc
+        raise OutputParseError(
+            FailureType.SCHEMA_MISMATCH, f"schema validation failed: {exc}"
+        ) from exc
 
 
 def parse_agent_output(raw: str) -> AgentOutput:
@@ -144,8 +161,10 @@ def call_validated(
     model: type[OutputModel],
     contract: str,
     response_schema: dict | None = None,
+    timeout_seconds: float | None = None,
+    on_attempt: Callable[[int], None] | None = None,
 ) -> tuple[OutputModel, int]:
-    """Call the LLM, validate, and retry up to 2 times with the error fed back."""
+    """Call the LLM, validate, and feed validation errors back for up to N retries."""
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt + contract},
         {"role": "user", "content": user_content},
@@ -154,23 +173,36 @@ def call_validated(
     if response_schema is None:
         response_schema = model.model_json_schema()
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    max_attempts = 1 + max(0, settings.llm_max_retries)
+    for attempt in range(1, max_attempts + 1):
+        if on_attempt is not None:
+            on_attempt(attempt)
         try:
-            raw = call_llm(messages, response_schema=response_schema)
+            raw = call_llm(
+                messages, response_schema=response_schema, timeout=timeout_seconds
+            )
         except LLMTimeoutError as exc:
-            raise AgentRunError("llm_timeout", str(exc), attempts=attempt) from exc
+            raise AgentRunError(
+                FailureType.TIMEOUT, str(exc), attempts=max(attempt, exc.attempts)
+            ) from exc
         except LLMError as exc:
-            raise AgentRunError("llm_error", str(exc), attempts=attempt) from exc
+            raise AgentRunError(
+                FailureType.LLM_ERROR, str(exc), attempts=max(attempt, exc.attempts)
+            ) from exc
 
         try:
             return parse_output(raw, model), attempt
-        except ValueError as exc:
-            if attempt == MAX_ATTEMPTS:
+        except OutputParseError as exc:
+            if attempt == max_attempts:
                 raise AgentRunError(
-                    "invalid_agent_output", str(exc), attempts=attempt, raw=raw
+                    exc.error_type, str(exc), attempts=attempt, raw=raw
                 ) from None
             logger.warning(
-                "invalid output attempt=%d/%d: %s", attempt, MAX_ATTEMPTS, _short(str(exc), 500)
+                "invalid output attempt=%d/%d type=%s: %s",
+                attempt,
+                max_attempts,
+                exc.error_type.value,
+                _short(str(exc), 500),
             )
             messages.append({"role": "assistant", "content": raw})
             messages.append({"role": "user", "content": RETRY_INSTRUCTION.format(error=exc)})
@@ -187,13 +219,21 @@ def run_agent(
     contract: str = STEP_CONTRACT,
     task: str = "",
     response_schema: dict | None = None,
+    timeout_seconds: float | None = None,
+    on_attempt: Callable[[int], None] | None = None,
 ) -> AgentRun[OutputModel]:
     """Load ``agents/<agent>.md``, run one agent with retries, and log the attempt."""
     started = time.perf_counter()
     try:
         system_prompt = load_system_prompt(agent)
         output, attempts = call_validated(
-            system_prompt, user_content, model, contract, response_schema
+            system_prompt,
+            user_content,
+            model,
+            contract,
+            response_schema,
+            timeout_seconds,
+            on_attempt=on_attempt,
         )
     except AgentRunError as exc:
         logger.error(
