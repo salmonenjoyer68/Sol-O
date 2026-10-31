@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="img/logo/sol-o.png" alt="Sol-O logo" width="320">
+</p>
+
 # Sol-O
 
 Automates customer inquiries: **researcher → writer → checker → logger → notifier** (Tavily search, SQLite audit log, Telegram delivery).
