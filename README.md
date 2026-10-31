@@ -11,6 +11,7 @@
 <p align="center">
   <a href="#about">About</a> •
   <a href="#phase-1-single-agent-api">Phase 1</a> •
+  <a href="#phase-2-the-sun-orchestrator">Phase 2</a> •
   <a href="#quickstart">Quickstart</a> •
   <a href="#api">API</a> •
   <a href="#how-it-works">How it works</a> •
@@ -53,12 +54,37 @@ What is implemented:
 - Invalid output is retried up to 2 times with the validation error fed back to
   the model.
 - Markdown code fences are stripped before parsing.
+- When the provider supports it, each agent's JSON Schema is enforced during
+  generation; providers without structured outputs fall back to plain JSON mode.
 - LLM calls time out after 30 seconds.
 - Every call is logged with agent, task, attempts, duration, and result.
 
 Not in Phase 1: orchestrator, multiple agents, search, database, auth,
 streaming, and a frontend. The researcher prompt explicitly marks claims
 unverified because no search tool exists yet.
+
+## Phase 2: the Sun (orchestrator)
+
+The Sun plans a task, runs up to 7 agents sequentially, and passes every
+validated output to the next agent. The default plan is researcher → writer →
+checker; `--plan` lets `agents/sun.md` pick the agents and their instructions.
+A run stops early on `needs_clarification` or when an agent fails its retries,
+and returns the outputs collected so far. `POST /orchestrate` runs the same
+pipeline over HTTP.
+
+Run steps:
+
+```bash
+uv run python sun.py "Explain why small cafes should use online ordering"
+uv run python sun.py "Explain why small cafes should use online ordering" --plan
+uv run uvicorn main:app --reload
+curl -X POST http://127.0.0.1:8000/orchestrate -H 'Content-Type: application/json' \
+  -d '{"task": "Explain why small cafes should use online ordering", "use_llm_planner": false}'
+```
+
+Each event is printed through a single `emit()` in `app/orchestrator.py`
+(`plan_ready`, `agent_called`, `agent_done`, `agent_failed`, `stopped`,
+`all_done`), so Phase 6 can replace printing with SSE or WebSockets.
 
 ## Quickstart
 
@@ -194,6 +220,39 @@ Errors:
 | `502` | `{"error": "llm_error", ...}` | Provider or configuration failure |
 | `504` | `{"error": "llm_timeout", ...}` | No response within 30 seconds |
 
+### `POST /orchestrate`
+
+Request:
+
+```json
+{
+  "task": "Explain why small cafes should use online ordering",
+  "use_llm_planner": false
+}
+```
+
+Response (`200`):
+
+```json
+{
+  "status": "complete",
+  "task": "Explain why small cafes should use online ordering",
+  "planner": "hardcoded",
+  "plan": [{"agent": "researcher", "task": "..."}],
+  "outputs": [
+    {"step": 1, "agent": "researcher", "task": "...", "attempts": 1,
+     "duration_seconds": 2.4, "output": {"agent": "researcher", "status": "complete"}}
+  ],
+  "stopped_at": null,
+  "reason": null,
+  "duration_seconds": 8.1
+}
+```
+
+`status` is `complete`, `failed`, or `needs_clarification`. A stopped run still
+returns `200` with the outputs collected so far, `stopped_at` naming the agent
+(or `sun` when planning failed), and `reason` explaining the stop.
+
 ## How it works
 
 Phase 1 runs a single agent:
@@ -215,23 +274,20 @@ strip fences → parse JSON → validate with Pydantic
 200 + JSON              feed error back → retry → 502 if still invalid
 ```
 
-The planned multi-agent workflow adds an orchestrator (the "Sun") that routes
-work across specialist agents (the "planets"):
+The multi-agent workflow is implemented in Phase 2:
 
 ```text
-Business goal
-      │
-      ▼
-Orchestrator
-      │
-      ├── Research agent
-      ├── Analysis agent
-      ├── Planning agent
-      ├── Execution agent
-      └── Review agent
-      │
-      ▼
-Validated result and business action
+task
+  │
+  ▼
+Sun planner (hardcoded or agents/sun.md)
+  │
+  ├── researcher  ── validated JSON
+  ├── writer      ◄── original task + earlier outputs
+  └── checker     ◄── original task + earlier outputs
+  │
+  ▼
+OrchestrationResult (status, outputs, stopped_at, reason)
 ```
 
 A business request would be decomposed as follows:
@@ -248,11 +304,17 @@ A business request would be decomposed as follows:
 ```text
 .
 ├── agents/
-│   └── researcher.md     # Agent system prompts, one file per agent
+│   ├── researcher.md     # Research agent system prompt
+│   ├── writer.md         # Writer agent system prompt
+│   ├── checker.md        # Checker agent system prompt
+│   └── sun.md            # Sun planner prompt (--plan)
 ├── app/
-│   ├── main.py           # FastAPI app and POST /run
+│   ├── main.py           # FastAPI app, POST /run and POST /orchestrate
+│   ├── orchestrator.py   # The Sun: planning, sequential runs, emit()
+│   ├── agents.py         # Shared prompt loading, validation, retries
 │   ├── llm.py            # OpenAI-compatible LLM wrapper
 │   └── schemas.py        # Pydantic request/response contracts
+├── sun.py                # Terminal entry point for the orchestrator
 ├── configs/              # Versioned workflow and model configuration
 ├── data/                 # Gitignored datasets (raw → interim → processed)
 ├── deployment/           # Container and release files
@@ -272,10 +334,10 @@ A business request would be decomposed as follows:
 │   └── utils/            # Shared utilities
 ├── tests/
 │   ├── integration/      # Cross-component tests
-│   ├── unit/             # Focused tests
+│   ├── unit/             # Focused tests (orchestrator)
 │   └── test_run.py       # Terminal client for /run
 ├── .env.example          # Environment template (no secrets)
-├── requirements.txt      # Phase 1 dependencies
+├── requirements.txt      # Phase 1/2 runtime dependencies
 └── pyproject.toml        # Packaging, pytest, and ruff configuration
 ```
 

@@ -52,12 +52,18 @@ def _rejects_response_format(exc: APIStatusError) -> bool:
     """Detect a provider 4xx caused specifically by response_format support."""
     message = str(getattr(exc, "message", "") or exc).lower()
     return exc.status_code in (400, 422) and any(
-        token in message for token in ("response_format", "json_object", "unsupported")
+        token in message
+        for token in ("response_format", "json_object", "json_schema", "schema", "unsupported")
     )
 
 
-def call_llm(messages: list[dict[str, str]]) -> str:
-    """Send chat messages and return the raw assistant content."""
+def call_llm(messages: list[dict[str, str]], response_schema: dict | None = None) -> str:
+    """Send chat messages and return the raw assistant content.
+
+    When ``response_schema`` (a JSON Schema) is given, ask the provider to
+    enforce it, then fall back to plain JSON mode and finally to no
+    ``response_format`` if the provider rejects the richer options.
+    """
     base_url, api_key, model = _settings()
     client = OpenAI(
         base_url=base_url,
@@ -71,20 +77,41 @@ def call_llm(messages: list[dict[str, str]]) -> str:
         "timeout": LLM_TIMEOUT_SECONDS,
     }
 
+    formats: list[dict | None] = []
+    if response_schema is not None:
+        formats.append(
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "agent_output",
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
+        )
+    formats.extend([{"type": "json_object"}, None])
+
     try:
-        try:
-            completion = client.chat.completions.create(
-                response_format={"type": "json_object"}, **request
-            )
-        except APIStatusError as exc:
-            if not _rejects_response_format(exc):
-                raise
-            logger.info("provider rejected response_format; retrying without it")
-            completion = client.chat.completions.create(**request)
+        completion = None
+        for index, response_format in enumerate(formats):
+            current = dict(request)
+            if response_format is not None:
+                current["response_format"] = response_format
+            try:
+                completion = client.chat.completions.create(**current)
+                break
+            except APIStatusError as exc:
+                if index == len(formats) - 1 or not _rejects_response_format(exc):
+                    raise
+                logger.info(
+                    "provider rejected response_format type=%s; retrying with a fallback",
+                    (response_format or {}).get("type", "none"),
+                )
+
+        if completion is None:  # pragma: no cover - the loop always breaks or raises
+            raise LLMError("no completion returned")
     except APITimeoutError as exc:
-        raise LLMTimeoutError(
-            f"LLM call exceeded {LLM_TIMEOUT_SECONDS:.0f}s"
-        ) from exc
+        raise LLMTimeoutError(f"LLM call exceeded {LLM_TIMEOUT_SECONDS:.0f}s") from exc
     except APIError as exc:
         raise LLMError(f"{type(exc).__name__}: {exc}") from exc
 
