@@ -110,10 +110,14 @@ def _fail_run(run_id: str, exc: BaseException) -> None:
         api_logger.exception("could not publish run_failed run_id=%s", run_id)
 
 
-def _run_orchestration(task: str, use_llm_planner: bool, run_id: str) -> None:
+def _run_orchestration(
+    task: str, use_llm_planner: bool, run_id: str, source: str = ""
+) -> None:
     api_logger.info("orchestration queued run_id=%s", run_id)
     try:
-        run_orchestration(task, use_llm_planner=use_llm_planner, run_id=run_id)
+        run_orchestration(
+            task, use_llm_planner=use_llm_planner, run_id=run_id, source=source
+        )
     except Exception as exc:  # a background failure must not kill the worker
         api_logger.exception("orchestration failed run_id=%s", run_id)
         _fail_run(run_id, exc)
@@ -124,10 +128,12 @@ def orchestrate(request: OrchestrationRequest, background: BackgroundTasks) -> d
     """Queue a run in the background and return its id so the browser can watch live."""
     run_id = run_store.new_run_id()
     try:
-        run_store.start_run(run_id, request.task)
+        run_store.start_run(run_id, request.task, source=request.source)
     except Exception:  # still accept the run; the Sun retries the insert
         api_logger.exception("could not create orchestration run row run_id=%s", run_id)
-    background.add_task(_run_orchestration, request.task, request.use_llm_planner, run_id)
+    background.add_task(
+        _run_orchestration, request.task, request.use_llm_planner, run_id, request.source
+    )
     return {"run_id": run_id, "status": "accepted"}
 
 
@@ -232,7 +238,7 @@ def reject_pending(action_id: int) -> dict[str, Any]:
 def _run_inbound(message: str, source: str, run_id: str) -> None:
     api_logger.info("inbound source=%s run_id=%s", source, run_id)
     try:
-        run_orchestration(message, run_id=run_id)
+        run_orchestration(message, run_id=run_id, source=source)
     except Exception as exc:  # a background failure must not kill the worker
         api_logger.exception("inbound run failed run_id=%s", run_id)
         _fail_run(run_id, exc)
@@ -243,7 +249,7 @@ def inbound(request: InboundRequest, background: BackgroundTasks) -> InboundResp
     """Accept a message, queue the full orchestration, return the run id immediately."""
     run_id = run_store.new_run_id()
     try:
-        run_store.start_run(run_id, request.message)
+        run_store.start_run(run_id, request.message, source=request.source)
     except Exception:  # still accept the message; the Sun retries the insert
         api_logger.exception("could not create inbound run row run_id=%s", run_id)
     background.add_task(_run_inbound, request.message, request.source, run_id)

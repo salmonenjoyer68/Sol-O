@@ -29,6 +29,7 @@ from app.agents import (
 )
 from app.approvals import approval_required, create_pending
 from app.config import settings
+from app.llm import resolved_model
 from app.reliability import Deadline, RunTimeout, redact, truncate
 from app.schemas import (
     AgentOutput,
@@ -41,6 +42,7 @@ from app.schemas import (
     SunPlan,
     WriterOutput,
 )
+from app.toolbox import AGENT_TOOLS, Toolset
 from tools.search import SearchUnavailable, search
 from tools.telegram import TelegramError, send_message
 
@@ -145,12 +147,14 @@ def _run_logged_agent(
     deadline: Deadline,
     contract: str = STEP_CONTRACT,
     response_schema: dict | None = None,
+    toolset: Toolset | None = None,
 ) -> AgentRun:
     """Run one agent and audit it in ``agent_calls``, success or failure."""
     remaining = deadline.remaining()
     if remaining <= 0:
         raise RunTimeout(f"run exceeded {deadline.seconds:.1f}s before agent={agent}")
 
+    model_name = resolved_model(agent)
     started_at = run_store.now_iso()
     started = time.perf_counter()
 
@@ -167,6 +171,7 @@ def _run_logged_agent(
             response_schema=response_schema,
             timeout_seconds=min(settings.llm_timeout_seconds, remaining),
             on_attempt=on_attempt,
+            toolset=toolset,
         )
     except AgentRunError as exc:
         _record_agent_call(
@@ -182,6 +187,7 @@ def _run_logged_agent(
             input_chars=len(message),
             output_chars=len(exc.raw),
             raw_output=exc.raw,
+            model=model_name,
         )
         raise
 
@@ -197,6 +203,7 @@ def _run_logged_agent(
         input_chars=len(message),
         output_chars=len(raw_output),
         raw_output=raw_output,
+        model=model_name,
     )
     return run
 
@@ -513,16 +520,24 @@ def _finish(
 
 
 def orchestrate(
-    task: str, use_llm_planner: bool = False, run_id: str | None = None
+    task: str,
+    use_llm_planner: bool = False,
+    run_id: str | None = None,
+    source: str = "",
 ) -> OrchestrationResult:
     """Run one orchestration with its events bound to the run id for SSE."""
     resolved = run_id or run_store.new_run_id()
     with events.run_context(resolved):
-        return _orchestrate(task, use_llm_planner=use_llm_planner, run_id=resolved)
+        return _orchestrate(
+            task, use_llm_planner=use_llm_planner, run_id=resolved, source=source
+        )
 
 
 def _orchestrate(
-    task: str, use_llm_planner: bool = False, run_id: str | None = None
+    task: str,
+    use_llm_planner: bool = False,
+    run_id: str | None = None,
+    source: str = "",
 ) -> OrchestrationResult:
     """Run one orchestration: plan, execute sequentially, log, gate, notify."""
     started = time.perf_counter()
@@ -539,7 +554,7 @@ def _orchestrate(
         logger.warning(warning)
 
     try:
-        run_store.start_run(run_id, task)
+        run_store.start_run(run_id, task, source=source)
     except Exception as exc:  # logging must never take the run down
         logger.exception("could not create run row")
         emit("logger_failed", phase="start", run_id=run_id, reason=str(exc))
@@ -624,6 +639,18 @@ def _orchestrate(
                 model=model,
                 task=task,
                 deadline=deadline,
+                toolset=(
+                    Toolset(
+                        agent=step.agent,
+                        step=number,
+                        run_id=run_id,
+                        source=source,
+                        deadline=deadline,
+                        emit=emit,
+                    )
+                    if step.agent in AGENT_TOOLS
+                    else None
+                ),
             )
         except RunTimeout as exc:
             status, failed_at, stopped_at = "failed", step.agent, step.agent

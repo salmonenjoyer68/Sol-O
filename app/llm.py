@@ -39,13 +39,30 @@ class LLMTimeoutError(LLMError):
     """The provider did not answer within LLM_TIMEOUT_SECONDS."""
 
 
+def model_for(agent: str | None) -> str | None:
+    """Resolve ``AGENT_MODELS="researcher=qwen2.5:7b,writer=qwen2.5:14b"`` for one agent."""
+    if not agent:
+        return None
+    raw = os.getenv("AGENT_MODELS", "")
+    for pair in raw.split(","):
+        name, _, model = pair.partition("=")
+        if name.strip() == agent and model.strip():
+            return model.strip()
+    return None
+
+
+def resolved_model(agent: str | None) -> str:
+    """The model id actually used for an agent: its override, else ``MODEL``."""
+    return model_for(agent) or os.getenv("MODEL", "").strip()
+
+
 def _settings() -> tuple[str, str, str]:
     base_url = os.getenv("BASE_URL", "").strip()
     api_key = os.getenv("API_KEY", "").strip()
     model = os.getenv("MODEL", "").strip()
     missing = [
         name
-        for name, value in (("BASE_URL", base_url), ("API_KEY", api_key), ("MODEL", model))
+        for name, value in (("BASE_URL", base_url), ("API_KEY", api_key))
         if not value
     ]
     if missing:
@@ -131,13 +148,17 @@ def call_llm(
     messages: list[dict[str, str]],
     response_schema: dict | None = None,
     timeout: float | None = None,
+    model: str | None = None,
 ) -> str:
     """Send chat messages and return the raw assistant content.
 
     Transient failures (timeout, connection, 429, 5xx) are retried up to
     ``LLM_MAX_RETRIES`` with 1s/2s/4s backoff. 4xx errors fail immediately.
     """
-    base_url, api_key, model = _settings()
+    base_url, api_key, default_model = _settings()
+    request_model = model or default_model
+    if not request_model:
+        raise LLMError("missing environment variable(s): MODEL")
     call_timeout = float(timeout) if timeout is not None else settings.llm_timeout_seconds
     call_timeout = max(0.001, call_timeout)
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=call_timeout, max_retries=0)
@@ -146,7 +167,7 @@ def call_llm(
 
     def attempt() -> str:
         attempts["count"] += 1
-        return _request(client, messages, response_schema, model, call_timeout)
+        return _request(client, messages, response_schema, request_model, call_timeout)
 
     def on_retry(retry_number: int, delay: float, exc: BaseException) -> None:
         logger.warning(

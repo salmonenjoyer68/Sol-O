@@ -376,6 +376,7 @@ function summariseEvent(name, data) {
   if (name === "all_done") return `${data.status} in ${data.seconds}s`;
   if (name === "run_failed") return `${data.error_type} at ${data.failed_at}`;
   if (name === "search_done") return `${data.results} results`;
+  if (name === "tool_done") return `${data.tool} ${data.ok ? "ok" : "failed"}`;
   return JSON.stringify(data).slice(0, 90);
 }
 
@@ -591,6 +592,14 @@ function applyEvent(record) {
       }
       showResult(data.status);
       refreshRuns();
+      break;
+    }
+    case "tool_requested": {
+      setSun("orchestrating", `${data.agent} → ${data.tool}`);
+      break;
+    }
+    case "tool_done": {
+      setSun("orchestrating", `${data.tool} ${data.ok ? "done" : "failed"}`);
       break;
     }
     case "stopped": {

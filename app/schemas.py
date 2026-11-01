@@ -81,6 +81,23 @@ class CheckerOutput(BaseModel):
     clarification_needed: str | None
 
 
+class ToolRequest(BaseModel):
+    """One tool a planet asks the Sun to run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolRequests(BaseModel):
+    """The envelope a planet returns to ask the Sun to run tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_requests: list[ToolRequest] = Field(min_length=1)
+
+
 class FailureType(str, Enum):
     """Structured failure categories recorded for every hard agent/tool failure."""
 
@@ -110,6 +127,8 @@ class OrchestrationRequest(BaseModel):
 
     task: str = Field(min_length=1)
     use_llm_planner: bool = False
+    # Conversation key used to scope memory recall; empty means no conversation.
+    source: str = ""
 
 
 class PlanStep(BaseModel):

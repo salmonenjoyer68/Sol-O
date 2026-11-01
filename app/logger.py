@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
     verdict TEXT,
     outputs_json TEXT NOT NULL DEFAULT '[]',
     duration_seconds REAL NOT NULL DEFAULT 0,
-    warning TEXT
+    warning TEXT,
+    source TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS agent_calls (
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS agent_calls (
     error_message TEXT,
     input_chars INTEGER NOT NULL,
     output_chars INTEGER NOT NULL,
-    raw_output TEXT NOT NULL DEFAULT ''
+    raw_output TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -66,7 +68,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     started_at TEXT NOT NULL,
     duration_ms INTEGER NOT NULL,
     status TEXT NOT NULL,
-    error_message TEXT
+    error_message TEXT,
+    args TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS pending_actions (
@@ -102,10 +105,20 @@ def new_run_id() -> str:
 
 
 def _ensure_columns(connection: sqlite3.Connection) -> None:
-    """Add Phase 5 columns to databases created by earlier phases."""
+    """Add Phase 5/7 columns to databases created by earlier phases."""
     columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
     if "warning" not in columns:
         connection.execute("ALTER TABLE runs ADD COLUMN warning TEXT")
+    if "source" not in columns:
+        connection.execute("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+
+    tool_columns = {row[1] for row in connection.execute("PRAGMA table_info(tool_calls)")}
+    if "args" not in tool_columns:
+        connection.execute("ALTER TABLE tool_calls ADD COLUMN args TEXT NOT NULL DEFAULT ''")
+
+    agent_columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_calls)")}
+    if "model" not in agent_columns:
+        connection.execute("ALTER TABLE agent_calls ADD COLUMN model TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
@@ -134,15 +147,26 @@ def _redact_text(text: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def start_run(run_id: str, task: str) -> None:
+def start_run(run_id: str, task: str, source: str = "") -> None:
     """Insert the pending row so a run is visible in GET /runs immediately."""
     with _connect() as connection:
         connection.execute(
             "INSERT OR REPLACE INTO runs"
             " (id, created_at, task, status, final_draft, verdict, outputs_json,"
-            " duration_seconds, warning)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, now_iso(), _redact_text(task), "running", "", None, "[]", 0.0, None),
+            " duration_seconds, warning, source)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                now_iso(),
+                _redact_text(task),
+                "running",
+                "",
+                None,
+                "[]",
+                0.0,
+                None,
+                _redact_text(source or ""),
+            ),
         )
     logger.info("run started id=%s", run_id)
 
@@ -261,6 +285,41 @@ def get_run_detail(run_id: str) -> dict[str, Any] | None:
 
 
 # --------------------------------------------------------------------------
+# Memory recall (same-conversation runs only)
+# --------------------------------------------------------------------------
+
+
+def recall_runs(
+    *, source: str, exclude_run_id: str, terms: list[str], limit: int = 5
+) -> list[dict[str, Any]]:
+    """Finished runs from the same conversation whose task or draft matches any term."""
+    cleaned = []
+    for term in terms:
+        text = "".join(ch for ch in term.lower() if ch not in "%_").strip()
+        if len(text) >= 3:
+            cleaned.append(text)
+    if not source or not cleaned:
+        return []
+
+    clause = " OR ".join("(task LIKE ? OR final_draft LIKE ?)" for _ in cleaned)
+    params: list[Any] = [source, exclude_run_id]
+    for text in cleaned:
+        pattern = f"%{text}%"
+        params.extend([pattern, pattern])
+    params.append(max(1, int(limit)))
+
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT id, created_at, task, final_draft FROM runs"
+            " WHERE source = ? AND id != ? AND status IN ('complete','partial')"
+            f" AND ({clause})"
+            " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# --------------------------------------------------------------------------
 # Run events (Phase 6 replay)
 # --------------------------------------------------------------------------
 
@@ -316,6 +375,7 @@ def save_agent_call(
     input_chars: int = 0,
     output_chars: int = 0,
     raw_output: str = "",
+    model: str = "",
 ) -> None:
     """One row per LLM agent call, written on success and failure."""
     from app.reliability import truncate
@@ -324,8 +384,8 @@ def save_agent_call(
         connection.execute(
             "INSERT INTO agent_calls"
             " (run_id, step, agent, started_at, duration_ms, attempts, status,"
-            " error_type, error_message, input_chars, output_chars, raw_output)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " error_type, error_message, input_chars, output_chars, raw_output, model)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 step,
@@ -339,6 +399,7 @@ def save_agent_call(
                 input_chars,
                 output_chars,
                 truncate(_redact_text(raw_output)),
+                _redact_text(model or ""),
             ),
         )
 
@@ -351,13 +412,16 @@ def save_tool_call(
     duration_ms: int,
     status: str,
     error_message: str | None = None,
+    args: str = "",
 ) -> None:
-    """One row per external tool call (search, Telegram)."""
+    """One row per external tool call (search, Telegram, planet tool)."""
+    from app.reliability import truncate
+
     with _connect() as connection:
         connection.execute(
             "INSERT INTO tool_calls"
-            " (run_id, tool, started_at, duration_ms, status, error_message)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " (run_id, tool, started_at, duration_ms, status, error_message, args)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 tool,
@@ -365,6 +429,7 @@ def save_tool_call(
                 int(duration_ms),
                 status,
                 _redact_text(error_message) if error_message else None,
+                truncate(_redact_text(args)) if args else "",
             ),
         )
 

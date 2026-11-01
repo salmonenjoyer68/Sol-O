@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         return _decide(args.reject, "reject")
 
     task = _task_from_args(parser, args)
-    result = orchestrate(task, use_llm_planner=args.use_llm_planner)
+    result = orchestrate(task, use_llm_planner=args.use_llm_planner, source="cli")
     print(json.dumps(result.model_dump(), indent=2, default=str))
     return EXIT_CODES[result.status]
 
