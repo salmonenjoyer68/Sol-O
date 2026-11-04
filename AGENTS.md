@@ -80,3 +80,17 @@ Sol-O is a Python multi-agent orchestration platform. The Sun orchestrator and t
 - `data/` contents are gitignored (the runtime SQLite database). Do not commit generated outputs.
 - `.env` is gitignored; never commit secrets. `.env.example` is the tracked template.
 - Project principles that affect design: keep agents single-purpose, validate outputs between stages, and require human approval before irreversible/high-impact actions.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `salmonenjoyer68/Sol-O` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical five roles, default strings: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
