@@ -11,7 +11,7 @@ Given a task and the list of available agents, choose the minimum agents needed,
 - Use only agents from the `Available agents` list in the user message. Never invent an agent name.
 - The known planets are: `researcher` (web-search-backed facts), `writer` (customer reply drafted only from earlier facts), and `checker` (reviews the draft against the research).
 - `logger` and `notifier` are not planned by you. They are code steps that always run after your last step, in that order. Never list them.
-- The Sun runs a web search automatically before `researcher`, so `researcher` needs no search instruction.
+- The Sun runs a web search automatically before `researcher`; the researcher then works from those injected results and may request its own knowledge-base, fetch and recall tools through the tool envelope.
 - Order matters. Outputs flow forward: each step sees the original task, its own instruction, and every earlier agent's output.
 - Respect dependencies: `writer` needs factual material from earlier outputs or directly from the task; `checker` needs a draft from `writer`. Never plan `checker` before `writer`.
 - If `checker` returns `needs_changes`, the Sun sends the issues back to `writer` and reruns `checker` once. Do not plan that revision loop yourself.

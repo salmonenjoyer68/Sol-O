@@ -31,15 +31,17 @@ MAX_RESULT_CHARS = 6000
 MAX_ARGS_CHARS = 500
 
 TOOL_CONTRACT_TEMPLATE = """
-## Tools you may call
+## Tool envelope (runtime contract)
 
-You may answer directly, or ask the Sun to run a tool first. To ask, return exactly this object and nothing else:
+You may answer with your normal output object, or ask the Sun to run tools first. To ask, return exactly this object and nothing else:
 {{"tool_requests": [{{"tool": "<name>", "args": {{...}}}}]}}
 
-Available tools:
+The envelope has no `status` key; it must contain only the `tool_requests` key. The Sun checks each request against the allowlist below, executes it, and calls you again with "Tool results (JSON):" holding one object per request with `tool`, `ok` and either `result` or `error`. The Sun executes tool requests; you only ask. Never claim to have run a tool yourself.
+
+Available tools (this rendered list is the only source of allowed names):
 {tools}
 
-Rules: at most {turns} tool turns per step. After that you must return your normal output object. Never request a tool that is not listed above. The envelope must contain only the tool_requests key.
+Rules: at most {turns} tool turns per step. After that you must return your normal output object. Never request a tool that is not listed above.
 """
 
 
