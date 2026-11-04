@@ -33,12 +33,12 @@ TOOL_CONTRACT_TEMPLATE = """
 You may answer with your normal output object, or ask the Sun to run tools first. To ask, return exactly this object and nothing else:
 {{"tool_requests": [{{"tool": "<name>", "args": {{...}}}}]}}
 
-The envelope has no `status` key; it must contain only the `tool_requests` key. The Sun checks each request against the allowlist below, executes it, and calls you again with "Tool results (JSON):" holding one object per request with `tool`, `ok` and either `result` or `error`. The Sun executes tool requests; you only ask. Never claim to have run a tool yourself.
+The envelope has no `status` key; it must contain only the `tool_requests` key. The Sun checks each request against the allowlist below, executes it, and calls you again with "Tool results (JSON):" holding one object per request with `tool`, `ok`, `truncated` and either `result` or `error`. A result marked `truncated: true` was trimmed to the result budget: treat it as partial, never as complete. The Sun executes tool requests; you only ask. Never claim to have run a tool yourself.
 
 Available tools (this rendered list is the only source of allowed names):
 {tools}
 
-Rules: at most {turns} tool turns per step. After that you must return your normal output object. Never request a tool that is not listed above.
+Rules: at most {turns} tool turns per step. After that you must return your normal output object. Never request a tool that is not listed above. A requested `limit` above the documented maximum of {items} results is clamped to it before the tool runs.
 """
 
 
@@ -90,7 +90,8 @@ TOOLS: dict[str, Tool] = {
         name="kb_search",
         signature='{"query": str, "limit": int=5}',
         description=(
-            "Search the company knowledge base; returns matching chunks with their file path."
+            "Search the company knowledge base; returns matching chunks with their file path "
+            "(trimmed to the result budget; `limit` is clamped to the documented maximum)."
         ),
         required=("query",),
         handler=_handler_search,
@@ -99,7 +100,8 @@ TOOLS: dict[str, Tool] = {
         name="fetch_url",
         signature='{"url": str}',
         description=(
-            "Download one http(s) page and return its visible text (first 6000 characters)."
+            "Download one http(s) page and return its visible text (trimmed to the result "
+            "budget and marked `truncated` when partial)."
         ),
         required=("url",),
         handler=_handler_fetch,
@@ -117,7 +119,9 @@ TOOLS: dict[str, Tool] = {
     "recall": Tool(
         name="recall",
         signature='{"query": str, "limit": int=5}',
-        description="Search earlier runs from this same conversation.",
+        description=(
+            "Search earlier runs from this same conversation (trimmed to the result budget)."
+        ),
         required=("query",),
         handler=_handler_recall,
     ),
@@ -130,11 +134,129 @@ AGENT_TOOLS: dict[str, tuple[str, ...]] = {
 }
 
 
+ELLIPSIS = "…"
+_UNFITTABLE = object()
+
+
+def _serialized(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _fits(make: Callable[[Any], dict[str, Any]], value: Any) -> bool:
+    return len(_serialized(make(value))) <= settings.max_result_chars
+
+
+def _clip_text(text: str, fits: Callable[[str], bool]) -> str:
+    """Longest prefix of ``text``, plus an ellipsis, whose payload fits the cap."""
+    if fits(text):
+        return text
+    best = ""
+    low, high = 0, len(text) - 1
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = text[:middle] + ELLIPSIS
+        if fits(candidate):
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _longest_text_key(value: dict[str, Any]) -> str | None:
+    keys = [key for key, item in value.items() if isinstance(item, str)]
+    if not keys:
+        return None
+    return max(keys, key=lambda key: len(_serialized(value[key])))
+
+
+def _trim_dict(value: dict[str, Any], make: Callable[[Any], dict[str, Any]]) -> Any:
+    """Clip the longest text field until the payload fits; unfittable when no field helps."""
+    current = dict(value)
+    while not _fits(make, current):
+        key = _longest_text_key(current)
+        if key is None:
+            return _UNFITTABLE
+
+        def fits_field(
+            candidate: str, field: str = key, value: dict[str, Any] = current
+        ) -> bool:
+            return _fits(make, {**value, field: candidate})
+
+        clipped = _clip_text(current[key], fits_field)
+        if clipped == current[key]:
+            return _UNFITTABLE
+        current[key] = clipped
+    return current
+
+
+def _trim_list(value: list[Any], make: Callable[[Any], dict[str, Any]]) -> Any:
+    """Drop trailing items, then clip the last item's text, until the payload fits."""
+    current = list(value)
+    while current and not _fits(make, current):
+        if len(current) > 1:
+            current.pop()
+            continue
+        item = current[0]
+        if isinstance(item, str):
+            trimmed = _clip_text(item, lambda candidate: _fits(make, [candidate]))
+        elif isinstance(item, dict):
+            trimmed = _trim_dict(item, lambda candidate: make([candidate]))
+        elif isinstance(item, list):
+            trimmed = _trim_list(item, lambda candidate: make([candidate]))
+        else:
+            return _UNFITTABLE
+        if trimmed is _UNFITTABLE or trimmed == item:
+            return _UNFITTABLE
+        current[0] = trimmed
+    return current
+
+
 def _fit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Cap the serialized result so one page cannot flood the next prompt."""
-    if len(json.dumps(payload, ensure_ascii=False, default=str)) <= settings.max_result_chars:
-        return payload
-    return {"tool": payload["tool"], "ok": payload["ok"], "result": "…truncated…"}
+    """Trim a result until the serialized payload fits; never replace it with a placeholder.
+
+    Strings are clipped, lists drop their tail then clip the last item, and dicts
+    clip their longest text field. Clipping the serialized value is the last
+    resort. ``tool``, ``ok`` and ``truncated`` always survive.
+    """
+    envelope = {
+        "tool": payload["tool"],
+        "ok": payload["ok"],
+        "truncated": bool(payload.get("truncated", False)),
+    }
+    if "result" not in payload:
+        return {**payload, "truncated": envelope["truncated"]}
+
+    def make(value: Any) -> dict[str, Any]:
+        return {**envelope, "result": value}
+
+    result = payload["result"]
+    if _fits(make, result):
+        return make(result)
+    envelope["truncated"] = True
+    if isinstance(result, str):
+        trimmed = _clip_text(result, lambda candidate: _fits(make, candidate))
+    elif isinstance(result, list):
+        trimmed = _trim_list(result, make)
+    elif isinstance(result, dict):
+        trimmed = _trim_dict(result, make)
+    else:
+        trimmed = _UNFITTABLE
+    if trimmed is _UNFITTABLE:
+        trimmed = _clip_text(_serialized(result), lambda candidate: _fits(make, candidate))
+    return make(trimmed)
+
+
+def _clamp_limit(args: dict[str, Any]) -> dict[str, Any]:
+    """Clamp a requested result count to the documented maximum before the handler runs."""
+    if "limit" not in args:
+        return args
+    try:
+        requested = int(args["limit"])
+    except (TypeError, ValueError):
+        return args
+    clamped = max(1, min(requested, settings.max_result_items))
+    return args if args["limit"] == clamped else {**args, "limit": clamped}
 
 
 @dataclass
@@ -160,7 +282,9 @@ class Toolset:
             for tool in self.tools.values()
         ]
         return TOOL_CONTRACT_TEMPLATE.format(
-            tools="\n".join(lines), turns=settings.max_tool_turns
+            tools="\n".join(lines),
+            turns=settings.max_tool_turns,
+            items=settings.max_result_items,
         )
 
     def _audit(self, **values: Any) -> None:
@@ -174,6 +298,7 @@ class Toolset:
         name = request.tool.strip()
         started = time.perf_counter()
         started_at = run_store.now_iso()
+        args = _clamp_limit(request.args)
         self.emit("tool_requested", step=self.step, agent=self.agent, tool=name)
 
         def finish(result: dict[str, Any], *, error: str | None = None) -> dict[str, Any]:
@@ -185,7 +310,7 @@ class Toolset:
                 duration_ms=duration_ms,
                 status="failed" if error else "ok",
                 error_message=error,
-                args=json.dumps(request.args, ensure_ascii=False, default=str)[
+                args=json.dumps(args, ensure_ascii=False, default=str)[
                     : settings.max_args_chars
                 ],
             )
@@ -197,6 +322,7 @@ class Toolset:
                 tool=name,
                 ok=not error,
                 ms=duration_ms,
+                truncated=payload["truncated"],
                 chars=len(json.dumps(payload.get("result", ""), ensure_ascii=False, default=str)),
             )
             return payload
@@ -212,7 +338,7 @@ class Toolset:
                 {"tool": name, "ok": False, "error": "run_out_of_time"},
                 error="run_out_of_time",
             )
-        missing = [key for key in tool.required if key not in request.args]
+        missing = [key for key in tool.required if key not in args]
         if missing:
             return finish(
                 {
@@ -231,7 +357,7 @@ class Toolset:
             deadline=self.deadline,
         )
         try:
-            result = tool.handler(request.args, context)
+            result = tool.handler(args, context)
         except Exception as exc:  # noqa: BLE001 - a failing tool degrades, never ends the step
             message = redact(str(exc))[:300] or type(exc).__name__
             return finish({"tool": name, "ok": False, "error": message}, error=message)
