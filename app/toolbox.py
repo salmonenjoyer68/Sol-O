@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app import logger as run_store
+from app.config import settings
 from app.reliability import Deadline, redact
 from app.schemas import ToolRequest
 from tools.calc import calculate
@@ -25,10 +26,6 @@ from tools.kb import search_kb
 from tools.recall import recall
 
 logger = logging.getLogger("sol_o.sun")
-
-MAX_TOOL_TURNS = 3
-MAX_RESULT_CHARS = 6000
-MAX_ARGS_CHARS = 500
 
 TOOL_CONTRACT_TEMPLATE = """
 ## Tools you may call
@@ -133,7 +130,7 @@ AGENT_TOOLS: dict[str, tuple[str, ...]] = {
 
 def _fit(payload: dict[str, Any]) -> dict[str, Any]:
     """Cap the serialized result so one page cannot flood the next prompt."""
-    if len(json.dumps(payload, ensure_ascii=False, default=str)) <= MAX_RESULT_CHARS:
+    if len(json.dumps(payload, ensure_ascii=False, default=str)) <= settings.max_result_chars:
         return payload
     return {"tool": payload["tool"], "ok": payload["ok"], "result": "…truncated…"}
 
@@ -160,7 +157,9 @@ class Toolset:
             f"- {tool.name} {tool.signature} — {tool.description}"
             for tool in self.tools.values()
         ]
-        return TOOL_CONTRACT_TEMPLATE.format(tools="\n".join(lines), turns=MAX_TOOL_TURNS)
+        return TOOL_CONTRACT_TEMPLATE.format(
+            tools="\n".join(lines), turns=settings.max_tool_turns
+        )
 
     def _audit(self, **values: Any) -> None:
         try:
@@ -184,7 +183,9 @@ class Toolset:
                 duration_ms=duration_ms,
                 status="failed" if error else "ok",
                 error_message=error,
-                args=json.dumps(request.args, ensure_ascii=False, default=str)[:MAX_ARGS_CHARS],
+                args=json.dumps(request.args, ensure_ascii=False, default=str)[
+                    : settings.max_args_chars
+                ],
             )
             payload = _fit(result)
             self.emit(
