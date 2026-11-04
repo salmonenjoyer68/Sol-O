@@ -138,7 +138,8 @@ def test_envelope_runs_the_tool_then_returns_the_validated_output(
     run = agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
 
     assert run.output.draft == WRITER["draft"]
-    assert run.attempts == 2
+    assert run.attempts == 1
+    assert run.tool_turns == 1
     assert calls == [{"query": "weekend"}]
     assert "Tool results (JSON):" in fake.user_turns()[1]
     assert "kb/delivery.md" in fake.user_turns()[1]
@@ -150,6 +151,22 @@ def test_envelope_runs_the_tool_then_returns_the_validated_output(
     rows = detail["tool_calls"]
     assert [(row["tool"], row["status"]) for row in rows] == [("kb_search", "ok")]
     assert "weekend" in rows[0]["args"]
+
+
+def test_a_retry_after_a_tool_turn_counts_only_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "still working")
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="weekend"), "not json", json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    run = agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert run.output.draft == WRITER["draft"]
+    assert run.tool_turns == 1
+    assert run.attempts == 2
 
 
 def test_tool_turn_cap_stops_execution_and_demands_a_final_answer(
@@ -170,8 +187,11 @@ def test_tool_turn_cap_stops_execution_and_demands_a_final_answer(
 
     assert excinfo.value.error_type is FailureType.SCHEMA_MISMATCH
     assert len(calls) == config_settings.max_tool_turns
-    assert excinfo.value.attempts == 6
-    assert len(fake.calls) == 6
+    assert excinfo.value.tool_turns == config_settings.max_tool_turns
+    assert excinfo.value.attempts == 1 + config_settings.llm_max_retries
+    assert len(fake.calls) == (
+        1 + config_settings.llm_max_retries + config_settings.max_tool_turns
+    )
     assert any(
         "Tool budget is exhausted" in turn for turn in fake.user_turns()
     )
@@ -682,6 +702,9 @@ def test_orchestrate_records_source_and_executed_tools(
     detail = run_store.get_run_detail(result.run_id or "")
     assert detail is not None
     assert detail["run"]["source"] == "email:dana"
+    writer_call = next(row for row in detail["agent_calls"] if row["agent"] == "writer")
+    assert writer_call["tool_turns"] == 1
+    assert writer_call["attempts"] == 1
     tools = [row["tool"] for row in detail["tool_calls"]]
     assert "kb_search" in tools
     assert all(row["args"] for row in detail["tool_calls"] if row["tool"] == "kb_search")
