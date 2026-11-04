@@ -609,6 +609,56 @@ def test_invalid_json_is_a_structured_failure_and_written_to_agent_calls(
     assert detail["run"]["status"] == "failed"
 
 
+def test_agent_calls_recorded_before_tool_turns_read_as_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "legacy.db"
+    monkeypatch.setenv("SOL_O_DB", str(db))
+    connection = sqlite3.connect(db)
+    connection.executescript(
+        """
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            task TEXT NOT NULL,
+            status TEXT NOT NULL,
+            final_draft TEXT NOT NULL DEFAULT '',
+            verdict TEXT,
+            outputs_json TEXT NOT NULL DEFAULT '[]',
+            duration_seconds REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE agent_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            agent TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            attempts INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            error_type TEXT,
+            error_message TEXT,
+            input_chars INTEGER NOT NULL,
+            output_chars INTEGER NOT NULL,
+            raw_output TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO runs (id, created_at, task, status)
+        VALUES ('old-run', '2026-01-01T00:00:00+00:00', 'old task', 'complete');
+        INSERT INTO agent_calls
+        (run_id, step, agent, started_at, duration_ms, attempts, status, input_chars, output_chars)
+        VALUES ('old-run', 1, 'writer', '2026-01-01T00:00:00+00:00', 10, 3, 'ok', 1, 1);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    detail = run_store.get_run_detail("old-run")
+
+    assert detail is not None
+    assert detail["agent_calls"][0]["tool_turns"] == 0
+
+
 def test_schema_mismatch_is_reported_as_its_own_error_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -627,6 +677,82 @@ def test_schema_mismatch_is_reported_as_its_own_error_type(
     assert result.failure is not None
     assert result.failure.error_type == FailureType.SCHEMA_MISMATCH
     assert "schema validation failed" in result.failure.message
+
+
+def test_capped_tool_loop_reports_attempts_and_tool_turns_separately(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[tuple[str, dict[str, Any]]],
+) -> None:
+    class ToolLoopLLM:
+        """Researcher and checker answer; the writer keeps requesting tools."""
+
+        def __call__(
+            self,
+            messages: list[dict[str, str]],
+            response_schema: dict | None = None,
+            timeout: float | None = None,
+        ) -> str:
+            name = _agent_for(messages[0]["content"])
+            if name == "writer":
+                return json.dumps(
+                    {"tool_requests": [{"tool": "kb_search", "args": {"query": "weekend"}}]}
+                )
+            return json.dumps({"researcher": RESEARCHER, "checker": CHECKER}[name])
+
+    monkeypatch.setattr("app.agents.call_llm", ToolLoopLLM())
+
+    result = orchestrator.orchestrate("Explain why small cafes should use online ordering.")
+
+    assert result.status == "failed"
+    assert result.failed_at == "writer"
+    assert result.failure is not None
+    assert result.failure.attempts == 1 + config_settings.llm_max_retries
+    assert result.failure.tool_turns == config_settings.max_tool_turns
+
+    failed = dict(events)["agent_failed"]
+    assert failed["attempts"] == 1 + config_settings.llm_max_retries
+    assert failed["tool_turns"] == config_settings.max_tool_turns
+
+    detail = run_store.get_run_detail(result.run_id or "")
+    assert detail is not None
+    call = next(item for item in detail["agent_calls"] if item["agent"] == "writer")
+    assert call["status"] == "failed"
+    assert call["attempts"] == 1 + config_settings.llm_max_retries
+    assert call["tool_turns"] == config_settings.max_tool_turns
+
+
+def test_tool_turn_count_survives_on_a_completed_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OneToolTurnLLM:
+        """The writer asks for one tool, then returns its normal output."""
+
+        def __init__(self) -> None:
+            self.writer_calls = 0
+
+        def __call__(
+            self,
+            messages: list[dict[str, str]],
+            response_schema: dict | None = None,
+            timeout: float | None = None,
+        ) -> str:
+            name = _agent_for(messages[0]["content"])
+            if name == "writer":
+                self.writer_calls += 1
+                if self.writer_calls == 1:
+                    return json.dumps(
+                        {"tool_requests": [{"tool": "kb_search", "args": {"query": "weekend"}}]}
+                    )
+            outputs = {"researcher": RESEARCHER, "writer": WRITER, "checker": CHECKER}
+            return json.dumps(outputs[name])
+
+    monkeypatch.setattr("app.agents.call_llm", OneToolTurnLLM())
+
+    result = orchestrator.orchestrate("Explain why small cafes should use online ordering.")
+
+    writer_step = next(item for item in result.outputs if item.agent == "writer")
+    assert writer_step.tool_turns == 1
+    assert writer_step.attempts == 1
 
 
 def test_run_budget_exhaustion_returns_run_timeout(
