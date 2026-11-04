@@ -4,6 +4,7 @@
 Usage:
     python -m app.cli "task"                 # hardcoded researcher -> writer -> checker
     python -m app.cli "task" --plan          # LLM-chosen plan from agents/sun.md
+    python -m app.cli "task" --source chat-7 # continue an explicit conversation
     python -m app.cli --file examples/inquiry.txt  # read the task from a file
     python -m app.cli                        # use TASK_DESCRIPTION from .env
     python -m app.cli --pending              # list actions awaiting approval
@@ -144,6 +145,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="use_llm_planner",
         help="let agents/sun.md choose the agents instead of the hardcoded flow",
     )
+    parser.add_argument(
+        "--source",
+        default=None,
+        help=(
+            "conversation source for this run; omit for a per-invocation source so "
+            "recall cannot cross terminal tasks"
+        ),
+    )
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--show", metavar="RUN_ID", help="print a run timeline")
     actions.add_argument("--pending", action="store_true", help="list pending actions")
@@ -167,7 +176,11 @@ def main(argv: list[str] | None = None) -> int:
         return _decide(args.reject, "reject")
 
     task = _task_from_args(parser, args)
-    result = orchestrate(task, use_llm_planner=args.use_llm_planner, source="cli")
+    run_id = run_store.new_run_id()
+    source = args.source if args.source is not None else f"cli:{run_id}"
+    result = orchestrate(
+        task, use_llm_planner=args.use_llm_planner, run_id=run_id, source=source
+    )
     print(json.dumps(result.model_dump(), indent=2, default=str))
     return EXIT_CODES[result.status]
 
