@@ -78,7 +78,6 @@ class ScriptedLLM:
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOL_O_DB", str(tmp_path / "runs.db"))
     monkeypatch.setenv("DRY_RUN", "true")
-    monkeypatch.delenv("AGENT_MODELS", raising=False)
     run_store.start_run(RUN_ID, "customer asks about weekend delivery", source="email:dana")
 
 
