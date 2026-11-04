@@ -1,9 +1,12 @@
 """SSRF-guarded page fetch used by planets through the Sun's tool loop.
 
-Only public http(s) targets are fetched: private, loopback, link-local,
-reserved, multicast and unspecified addresses are rejected before any request,
-and every redirect hop is re-validated. The body is capped and reduced to its
-visible text so a page can be injected into a prompt safely.
+Only public http(s) targets are fetched: every address that is not globally
+routable - private, loopback, link-local, multicast, reserved, unspecified,
+carrier-grade NAT and the IPv6 transition ranges - is rejected before any
+request. Unparseable and zone-scoped addresses fail closed. The same predicate
+checks IP literals, every resolved address and every redirect hop. The body is
+capped and reduced to its visible text so a page can be injected into a prompt
+safely.
 """
 
 from __future__ import annotations
@@ -66,53 +69,58 @@ def _reject(reason: str) -> FetchError:
     return FetchError(f"url rejected: {reason}")
 
 
+def _is_public_address(address: str) -> bool:
+    """Return True only for a globally routable, unscoped IP address.
+
+    Unparseable and zone-scoped input fails closed. Multicast and reserved
+    ranges are excluded even where the standard library calls them global.
+    """
+    if "%" in address:
+        return False
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return parsed.is_global and not parsed.is_multicast and not parsed.is_reserved
+
+
 def _check_address(host: str, port: int) -> None:
     """Reject any resolved address that is not publicly routable."""
     try:
         addresses = {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
     except OSError as exc:
         raise FetchError(f"could not resolve host {host}: {exc}") from exc
-    for address in addresses:
-        try:
-            parsed = ipaddress.ip_address(address.split("%", 1)[0])
-        except ValueError:
-            raise FetchError(f"unparseable address for {host}") from None
-        if (
-            parsed.is_private
-            or parsed.is_loopback
-            or parsed.is_link_local
-            or parsed.is_reserved
-            or parsed.is_multicast
-            or parsed.is_unspecified
-        ):
-            raise _reject("url is not publicly routable")
+    if not addresses or not all(_is_public_address(address) for address in addresses):
+        raise _reject("url is not publicly routable")
 
 
 def _assert_public_url(url: str) -> str:
     """Validate one hop and return its port-qualified host for address checks."""
-    parts = urlsplit(url.strip())
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        raise _reject("unparseable url") from None
     if parts.scheme not in ALLOWED_SCHEMES:
         raise _reject(f"unsupported scheme {parts.scheme!r}")
     if parts.username or parts.password:
         raise _reject("credentials in url")
-    host = parts.hostname or ""
+    try:
+        host = parts.hostname or ""
+    except ValueError:
+        raise _reject("unparseable host") from None
     if not host:
         raise _reject("missing host")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        raise _reject("invalid port") from None
 
     try:
-        literal = ipaddress.ip_address(host.split("%", 1)[0])
+        ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
         _check_address(host, port)
     else:
-        if (
-            literal.is_private
-            or literal.is_loopback
-            or literal.is_link_local
-            or literal.is_reserved
-            or literal.is_multicast
-            or literal.is_unspecified
-        ):
+        if not _is_public_address(host):
             raise _reject("url is not publicly routable")
     return host
 
