@@ -87,9 +87,10 @@ def _is_public_address(address: str) -> bool:
 def _check_address(host: str, port: int) -> None:
     """Reject any resolved address that is not publicly routable."""
     try:
-        addresses = {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except OSError as exc:
         raise FetchError(f"could not resolve host {host}: {exc}") from exc
+    addresses = {info[4][0] for info in infos}
     if not addresses or not all(_is_public_address(address) for address in addresses):
         raise _reject("url is not publicly routable")
 
