@@ -146,6 +146,8 @@ def test_rendered_prompt_states_the_envelope_alongside_the_output_contract(
 
     assert "Runtime output contract" in prompt
     assert ENVELOPE_SAMPLE_RE.search(prompt), "the envelope shape is not stated"
+    # The envelope statement lives once, in the runtime contract.
+    assert len(ENVELOPE_SAMPLE_RE.findall(prompt)) == 1
     assert "Tool results (JSON):" in prompt
     assert "no `status` key" in prompt
     # The schema and the rendered contract describe the same envelope.
@@ -154,30 +156,35 @@ def test_rendered_prompt_states_the_envelope_alongside_the_output_contract(
     assert envelope.tool_requests[0].tool == allowed[0]
 
 
-def test_researcher_prompt_explains_injected_web_results_and_its_tools(
+def test_researcher_prompt_explains_injected_web_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prompt = rendered_system_prompt(monkeypatch, "researcher").lower()
+    prompt = rendered_system_prompt(monkeypatch, "researcher")
 
-    assert "no search tool of your own" not in prompt
-    assert "do not ask for more searches" not in prompt
-    assert "web search results (json)" in prompt
-    assert "inject" in prompt
-    for name in AGENT_TOOLS["researcher"]:
-        assert name in prompt
+    assert "Web search results (JSON)" in prompt
+    assert "inject" in prompt.lower()
+    assert rendered_allowlist(prompt) == set(AGENT_TOOLS["researcher"])
 
 
-def test_writer_prompt_allows_lookups_but_forbids_new_facts(
+def test_researcher_prompt_separates_url_citations_from_internal_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt = rendered_system_prompt(monkeypatch, "researcher")
+
+    lowered = prompt.lower()
+    assert "source_url" in lowered and "http(s)" in lowered
+    assert "[internal:" in prompt
+    assert "knowledge-base" in lowered
+
+
+def test_writer_prompt_permits_lookups_but_forbids_new_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt = rendered_system_prompt(monkeypatch, "writer")
-    lowered = prompt.lower()
 
-    assert "do not research" not in lowered
-    assert "never add new factual claims" in lowered
-    assert "numbers" in lowered and "quotes" in lowered and "sources" in lowered
-    for name in AGENT_TOOLS["writer"]:
-        assert name in prompt
+    assert rendered_allowlist(prompt) == set(AGENT_TOOLS["writer"])
+    assert "facts_used" in prompt
+    assert "new factual claims" in prompt.lower()
 
 
 def test_checker_prompt_documents_its_allowed_tools(
@@ -185,7 +192,5 @@ def test_checker_prompt_documents_its_allowed_tools(
 ) -> None:
     prompt = rendered_system_prompt(monkeypatch, "checker")
 
-    assert "kb_search" in prompt
-    assert "calc" in prompt
-    assert "fetch_url" not in prompt
-    assert "recall" not in prompt
+    assert rendered_allowlist(prompt) == set(AGENT_TOOLS["checker"])
+    assert "suggestion" in prompt

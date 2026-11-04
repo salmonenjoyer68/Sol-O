@@ -27,7 +27,6 @@ from app.reliability import call_with_retries, redact
 logger = logging.getLogger("sol_o.tools.fetch")
 
 MAX_BYTES = 200 * 1024
-MAX_TEXT_CHARS = 6000
 MAX_REDIRECTS = 3
 ALLOWED_SCHEMES = {"http", "https"}
 WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
@@ -178,8 +177,8 @@ def _fetch_once(url: str) -> dict[str, Any]:
                         break
                 body = b"".join(chunks)
                 text = _extract_text(body, response.encoding)
-                if len(text) > MAX_TEXT_CHARS:
-                    text = text[:MAX_TEXT_CHARS]
+                if len(text) > settings.max_result_chars:
+                    text = text[: settings.max_result_chars]
                     truncated = True
                 return {
                     "url": str(response.url),

@@ -56,3 +56,15 @@ def test_agent_models_parse_once_and_malformed_entries_are_skipped(
         "checker": "qwen2.5:14b",
     }
     assert caplog.text.count("AGENT_MODELS") >= 2
+
+
+def test_agent_models_skips_a_key_without_an_agent_prompt(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("AGENT_MODELS", "resercher=qwen2.5:7b,sun=qwen2.5:14b")
+
+    with caplog.at_level("WARNING", logger="sol_o.config"):
+        loaded = config.load_settings()
+
+    assert loaded.agent_models == {"sun": "qwen2.5:14b"}
+    assert "unknown AGENT_MODELS agent 'resercher'" in caplog.text
