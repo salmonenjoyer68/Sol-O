@@ -139,7 +139,7 @@ def test_envelope_runs_the_tool_then_returns_the_validated_output(
     assert calls == [{"query": "weekend"}]
     assert "Tool results (JSON):" in fake.user_turns()[1]
     assert "kb/delivery.md" in fake.user_turns()[1]
-    assert "## Tools you may call" in fake.calls[0][0]["content"]
+    assert "## Tool envelope (runtime contract)" in fake.calls[0][0]["content"]
     assert [event for event, _ in events] == ["tool_requested", "tool_done"]
 
     detail = run_store.get_run_detail(RUN_ID)
