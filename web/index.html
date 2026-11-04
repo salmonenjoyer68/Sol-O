@@ -364,6 +364,12 @@ function renderLog() {
 
 function summariseEvent(name, data) {
   if (!data) return "";
+  if (name === "tool_done") {
+    const step = data.step != null ? `#${data.step} ` : "";
+    const agent = data.agent ? `${data.agent} ` : "";
+    const trimmed = data.truncated ? " · trimmed" : "";
+    return `${step}${agent}${data.tool} ${data.ok ? "ok" : "failed"}${trimmed}`;
+  }
   if (data.agent) {
     const step = data.step != null ? `#${data.step} ` : "";
     const extra = data.status || data.error_type || (data.attempt ? `attempt ${data.attempt}` : "");
@@ -376,7 +382,6 @@ function summariseEvent(name, data) {
   if (name === "all_done") return `${data.status} in ${data.seconds}s`;
   if (name === "run_failed") return `${data.error_type} at ${data.failed_at}`;
   if (name === "search_done") return `${data.results} results`;
-  if (name === "tool_done") return `${data.tool} ${data.ok ? "ok" : "failed"}`;
   return JSON.stringify(data).slice(0, 90);
 }
 
@@ -599,7 +604,8 @@ function applyEvent(record) {
       break;
     }
     case "tool_done": {
-      setSun("orchestrating", `${data.tool} ${data.ok ? "done" : "failed"}`);
+      const trimmed = data.truncated ? " · trimmed" : "";
+      setSun("orchestrating", `${data.tool} ${data.ok ? "done" : "failed"}${trimmed}`);
       break;
     }
     case "stopped": {

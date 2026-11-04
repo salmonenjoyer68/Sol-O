@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import socket
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -15,6 +18,7 @@ from app.config import settings as config_settings
 from app.reliability import Deadline, run_deadline
 from app.schemas import AgentOutput, FailureType, WriterOutput
 from app.toolbox import Tool, Toolset
+from tools import fetch, kb
 
 RUN_ID = "run-tool-test"
 
@@ -224,6 +228,264 @@ def test_result_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None
     payload = json.loads(tool_results)
     assert "x" * 500 not in tool_results
     assert len(json.dumps(payload[0], ensure_ascii=False)) <= 120
+
+
+def _fed_back(fake: ScriptedLLM, turn: int = 1) -> Any:
+    """The JSON a planet receives after asking for one tool."""
+    return json.loads(fake.user_turns()[turn].split("\n", 1)[1])
+
+
+def test_an_oversized_string_result_is_clipped_not_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 200)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "head-" + "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert payload["result"].startswith("head-")
+    assert payload["result"].endswith("…")
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 200
+
+
+def test_a_pathologically_small_cap_still_returns_a_usable_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 40)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: ["x" * 100])
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert "…truncated…" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_an_oversized_list_result_drops_the_tail_and_keeps_the_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 320)
+    items = [
+        {"path": "kb/delivery.md", "text": f"item-{index} " + "y" * 80} for index in range(10)
+    ]
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: items)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    kept = payload["result"]
+    assert payload["truncated"] is True
+    assert 1 <= len(kept) < len(items)
+    assert kept == items[: len(kept)]
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 320
+
+
+def test_the_last_remaining_list_item_is_clipped_when_dropping_is_not_enough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 220)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: ["first item " + "z" * 800])
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is True
+    assert payload["result"][0].startswith("first item")
+    assert len(payload["result"][0]) < 800
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 220
+
+
+def test_an_oversized_dict_result_clips_its_longest_text_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 400)
+    result = {
+        "url": "https://example.com/delivery",
+        "status": 200,
+        "text": "page text " * 200,
+        "note": "short",
+    }
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: result)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    kept = payload["result"]
+    assert payload["truncated"] is True
+    assert kept["url"] == result["url"]
+    assert kept["status"] == 200
+    assert kept["note"] == "short"
+    assert kept["text"].startswith("page text ")
+    assert len(kept["text"]) < len(result["text"])
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 400
+
+
+def test_tool_done_carries_the_truncated_flag_for_a_trimmed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 120)
+    events: list[tuple[str, dict[str, Any]]] = []
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "w" * 500, events=events)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    done = dict(events)["tool_done"]
+    assert done["truncated"] is True
+
+
+def test_an_untrimmed_result_is_flagged_as_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "small", events=events)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is False
+    assert dict(events)["tool_done"]["truncated"] is False
+
+
+def test_an_absurd_requested_limit_is_clamped_before_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_items", 4)
+    seen: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        seen.append(args)
+        return "ok"
+
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="weekend", limit=10_000), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert seen == [{"query": "weekend", "limit": 4}]
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert json.loads(detail["tool_calls"][0]["args"])["limit"] == 4
+
+
+class _FetchPage:
+    """One fake httpx response for the near-cap fetch regression."""
+
+    url = "https://example.com/delivery"
+    status_code = 200
+    encoding = "utf-8"
+    is_redirect = False
+    headers: ClassVar[dict[str, str]] = {}
+
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        yield self.body
+
+
+def test_a_near_cap_fetch_reaches_the_planet_with_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_text = "Weekend delivery costs 4.99. " * 240
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))],
+    )
+
+    class FakeClient:
+        def stream(self, method: str, url: str) -> Any:
+            return contextlib.nullcontext(_FetchPage(f"<p>{page_text}</p>".encode()))
+
+    @contextlib.contextmanager
+    def fake_client(**kwargs: Any) -> Iterator[FakeClient]:
+        yield FakeClient()
+
+    monkeypatch.setattr(fetch.httpx, "Client", fake_client)
+    toolset = Toolset(
+        agent="researcher",
+        step=1,
+        run_id=RUN_ID,
+        source="email:dana",
+        deadline=run_deadline(60),
+        emit=lambda event, **data: None,
+    )
+    fake = ScriptedLLM(
+        [envelope("fetch_url", url="https://example.com/delivery"), json.dumps(RESEARCHER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("researcher", "research it", AgentOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    result = payload["result"]
+    assert payload["tool"] == "fetch_url"
+    assert payload["ok"] is True
+    assert result["url"] == "https://example.com/delivery"
+    assert result["text"].startswith("Weekend delivery costs 4.99.")
+    assert len(result["text"]) > 5000
+    assert payload["truncated"] is True
+    assert len(json.dumps(payload, ensure_ascii=False)) <= config_settings.max_result_chars
+
+
+def test_a_near_cap_knowledge_result_reaches_the_planet_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "kb"
+    root.mkdir()
+    blocks = "\n\n".join(f"Delivery {index} " + "d" * 690 for index in range(7))
+    (root / "notes.md").write_text(blocks, encoding="utf-8")
+    monkeypatch.setattr(kb, "KB_DIR", root)
+    monkeypatch.setattr(kb, "_index", None)
+    monkeypatch.setattr(config_settings, "max_result_chars", 6000)
+    toolset = Toolset(
+        agent="writer",
+        step=1,
+        run_id=RUN_ID,
+        source="email:dana",
+        deadline=run_deadline(60),
+        emit=lambda event, **data: None,
+    )
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="delivery", limit=7), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    chunks = payload["result"]
+    assert payload["tool"] == "kb_search"
+    assert payload["truncated"] is False
+    assert len(chunks) == 7
+    assert sum(len(chunk["text"]) for chunk in chunks) > 4000
+    assert all(chunk["text"].startswith("Delivery ") for chunk in chunks)
 
 
 def test_audited_args_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:

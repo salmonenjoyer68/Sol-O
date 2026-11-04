@@ -97,6 +97,7 @@ class Settings:
     agent_models: dict[str, str] = field(default_factory=dict)
     max_tool_turns: int = 3
     max_result_chars: int = 6000
+    max_result_items: int = 10
     max_args_chars: int = 500
 
 
@@ -115,6 +116,7 @@ def load_settings() -> Settings:
         agent_models=_agent_models("AGENT_MODELS"),
         max_tool_turns=_int("MAX_TOOL_TURNS", 3, 1),
         max_result_chars=_int("MAX_RESULT_CHARS", 6000, 1),
+        max_result_items=_int("MAX_RESULT_ITEMS", 10, 1),
         max_args_chars=_int("MAX_ARGS_CHARS", 500, 1),
     )
 
