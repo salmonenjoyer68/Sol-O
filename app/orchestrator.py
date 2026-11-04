@@ -25,6 +25,7 @@ from app.agents import (
     AgentNotFoundError,
     AgentRun,
     AgentRunError,
+    AttemptInfo,
     run_agent,
 )
 from app.approvals import approval_required, create_pending
@@ -160,8 +161,14 @@ def _run_logged_agent(
     started_at = run_store.now_iso()
     started = time.perf_counter()
 
-    def on_attempt(attempt: int) -> None:
-        emit("agent_working", step=step, agent=agent, attempt=attempt)
+    def on_attempt(info: AttemptInfo) -> None:
+        emit(
+            "agent_working",
+            step=step,
+            agent=agent,
+            attempt=info.attempt,
+            call=info.call,
+        )
 
     try:
         run = run_agent(
@@ -626,7 +633,7 @@ def _orchestrate(
         extra = ""
         if step.agent == "researcher":
             if search_block is None:
-                emit("agent_working", step=number, agent=step.agent, attempt=1)
+                emit("agent_working", step=number, agent=step.agent, attempt=1, call=1)
                 try:
                     search_block = _search_context(task, run_id, deadline)
                 except RunTimeout as exc:
@@ -886,7 +893,7 @@ def _orchestrate(
             reason=reason,
         )
         try:
-            emit("agent_working", step=number, agent="notifier", attempt=1)
+            emit("agent_working", step=number, agent="notifier", attempt=1, call=1)
             delivery = _send_telegram(run_id, text, deadline)
             notify_output = {"agent": "notifier", "status": "complete", **delivery}
             emit("notifier_sent", step=number, **delivery)

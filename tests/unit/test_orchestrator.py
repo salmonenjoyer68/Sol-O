@@ -721,6 +721,47 @@ def test_capped_tool_loop_reports_attempts_and_tool_turns_separately(
     assert call["tool_turns"] == config_settings.max_tool_turns
 
 
+def test_agent_working_separates_the_call_index_from_the_validation_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[tuple[str, dict[str, Any]]],
+) -> None:
+    class ToolThenRetryLLM:
+        """The writer uses one tool turn, fails validation once, then succeeds."""
+
+        def __init__(self) -> None:
+            self.writer_calls = 0
+
+        def __call__(
+            self,
+            messages: list[dict[str, str]],
+            response_schema: dict | None = None,
+            timeout: float | None = None,
+        ) -> str:
+            name = _agent_for(messages[0]["content"])
+            if name != "writer":
+                return json.dumps({"researcher": RESEARCHER, "checker": CHECKER}[name])
+            self.writer_calls += 1
+            if self.writer_calls == 1:
+                return json.dumps(
+                    {"tool_requests": [{"tool": "kb_search", "args": {"query": "weekend"}}]}
+                )
+            if self.writer_calls == 2:
+                return "not json"
+            return json.dumps(WRITER)
+
+    monkeypatch.setattr("app.agents.call_llm", ToolThenRetryLLM())
+
+    result = orchestrator.orchestrate("Explain why small cafes should use online ordering.")
+
+    assert result.status in {"complete", "awaiting_approval"}
+    writer_calls = [
+        (data["call"], data["attempt"])
+        for event, data in events
+        if event == "agent_working" and data.get("agent") == "writer"
+    ]
+    assert writer_calls == [(1, 1), (2, 1), (3, 2)]
+
+
 def test_tool_turn_count_survives_on_a_completed_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

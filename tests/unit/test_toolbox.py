@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import socket
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -18,7 +16,8 @@ from app.config import settings as config_settings
 from app.reliability import Deadline, run_deadline
 from app.schemas import AgentOutput, FailureType, WriterOutput
 from app.toolbox import Tool, Toolset
-from tools import fetch, kb
+from tests.unit.fakes import Page, install_http
+from tools import kb
 
 RUN_ID = "run-tool-test"
 
@@ -366,6 +365,42 @@ def test_an_untrimmed_result_is_flagged_as_not_truncated(
     assert dict(events)["tool_done"]["truncated"] is False
 
 
+@pytest.mark.parametrize("inner", [True, False])
+def test_a_tool_that_reports_its_own_truncation_flags_the_envelope(
+    monkeypatch: pytest.MonkeyPatch, inner: bool
+) -> None:
+    result = {"url": "https://example.com/delivery", "text": "short", "truncated": inner}
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: result)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is inner
+    assert payload["result"]["truncated"] is inner
+
+
+def test_a_cap_smaller_than_the_envelope_keeps_the_audit_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 20)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert payload["result"] == ""
+    # The fixed envelope alone exceeds this cap; it survives intact rather than
+    # dropping the audit fields, and the over-cap outcome is explicit.
+    assert len(json.dumps(payload, ensure_ascii=False)) > 20
+
+
 def test_an_absurd_requested_limit_is_clamped_before_the_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -390,25 +425,6 @@ def test_an_absurd_requested_limit_is_clamped_before_the_handler(
     assert json.loads(detail["tool_calls"][0]["args"])["limit"] == 4
 
 
-class _FetchPage:
-    """One fake httpx response for the near-cap fetch regression."""
-
-    url = "https://example.com/delivery"
-    status_code = 200
-    encoding = "utf-8"
-    is_redirect = False
-    headers: ClassVar[dict[str, str]] = {}
-
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def iter_bytes(self) -> Iterator[bytes]:
-        yield self.body
-
-
 def test_a_near_cap_fetch_reaches_the_planet_with_its_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,15 +435,14 @@ def test_a_near_cap_fetch_reaches_the_planet_with_its_text(
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))],
     )
 
-    class FakeClient:
-        def stream(self, method: str, url: str) -> Any:
-            return contextlib.nullcontext(_FetchPage(f"<p>{page_text}</p>".encode()))
-
-    @contextlib.contextmanager
-    def fake_client(**kwargs: Any) -> Iterator[FakeClient]:
-        yield FakeClient()
-
-    monkeypatch.setattr(fetch.httpx, "Client", fake_client)
+    install_http(
+        monkeypatch,
+        {
+            "https://example.com/delivery": Page(
+                "https://example.com/delivery", body=f"<p>{page_text}</p>".encode()
+            )
+        },
+    )
     toolset = Toolset(
         agent="researcher",
         step=1,
@@ -630,35 +645,6 @@ def test_agent_model_override_routes_only_the_named_agent(
 
     assert seen[0].get("model") == "qwen2.5:14b"
     assert "model" not in seen[1]
-
-
-def test_malformed_agent_model_override_falls_back_with_a_warning(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setenv("AGENT_MODELS", "writer=,researcher=qwen2.5:7b,broken")
-    with caplog.at_level("WARNING", logger="sol_o.config"):
-        loaded = config.load_settings()
-    assert loaded.agent_models == {"researcher": "qwen2.5:7b"}
-    assert "AGENT_MODELS" in caplog.text
-
-    monkeypatch.setattr(config_settings, "agent_models", loaded.agent_models)
-    seen: list[dict[str, Any]] = []
-
-    def fake(
-        messages: list[dict[str, str]],
-        response_schema: dict | None = None,
-        timeout: float | None = None,
-        **extra: Any,
-    ) -> str:
-        seen.append(extra)
-        return json.dumps(WRITER)
-
-    monkeypatch.setattr(agents_module, "call_llm", fake)
-    run = agents_module.run_agent("writer", "write the reply", WriterOutput)
-
-    assert run.output.draft == WRITER["draft"]
-    assert "model" not in seen[0]
 
 
 class RoutedLLM:

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import contextlib
 import socket
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
 
 import pytest
 
 from app import logger as run_store
+from app.config import settings as config_settings
+from tests.unit.fakes import Page, forbid_dns, forbid_http, install_http
 from tools import calc, fetch, kb, recall, telegram
 from tools import search as search_tool
 from tools.telegram import TelegramError, send_message, split_message
@@ -160,72 +159,6 @@ def test_calculate_rejects_anything_outside_the_allowlist(expression: str) -> No
 # ---------------------------------------------------------------------------
 
 
-class _Page:
-    """Fake httpx response plus client for fetch tests."""
-
-    def __init__(
-        self,
-        url: str,
-        *,
-        status_code: int = 200,
-        body: bytes = b"",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        self.url = url
-        self.status_code = status_code
-        self.body = body
-        self.encoding = "utf-8"
-        self.headers = headers or {}
-        self.is_redirect = status_code in {301, 302, 303, 307, 308}
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def iter_bytes(self) -> Iterator[bytes]:
-        yield self.body
-
-
-def _install_http(monkeypatch: pytest.MonkeyPatch, pages: dict[str, _Page]) -> list[str]:
-    """Serve scripted pages and return the list of requested urls."""
-    requested: list[str] = []
-
-    class FakeClient:
-        def stream(self, method: str, url: str) -> Any:
-            requested.append(url)
-            return contextlib.nullcontext(pages[url])
-
-    @contextlib.contextmanager
-    def fake_client(**kwargs: Any) -> Iterator[FakeClient]:
-        yield FakeClient()
-
-    monkeypatch.setattr(fetch.httpx, "Client", fake_client)
-    return requested
-
-
-def _forbid_dns(monkeypatch: pytest.MonkeyPatch) -> None:
-    def no_dns(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("resolution must not run for a rejected url")
-
-    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
-
-
-def _forbid_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    class NoRequestClient:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            return None
-
-        def stream(self, *args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("no request may be made for a rejected url")
-
-    monkeypatch.setattr(fetch.httpx, "Client", NoRequestClient)
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -251,16 +184,16 @@ def _forbid_http(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_url_rejects_unsafe_targets_before_any_request(
     url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _forbid_dns(monkeypatch)
-    _forbid_http(monkeypatch)
+    forbid_dns(monkeypatch)
+    forbid_http(monkeypatch)
 
     with pytest.raises(fetch.FetchError):
         fetch.fetch_url(url)
 
 
 def test_fetch_url_rejects_an_unparseable_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    _forbid_dns(monkeypatch)
-    _forbid_http(monkeypatch)
+    forbid_dns(monkeypatch)
+    forbid_http(monkeypatch)
 
     with pytest.raises(fetch.FetchError):
         fetch.fetch_url("http://[::zz]/")
@@ -289,7 +222,7 @@ def test_fetch_url_rejects_a_non_public_resolution(
         "getaddrinfo",
         lambda *args, **kwargs: [(2, 1, 6, "", (address, 80))],
     )
-    _forbid_http(monkeypatch)
+    forbid_http(monkeypatch)
 
     with pytest.raises(fetch.FetchError, match="not publicly routable"):
         fetch.fetch_url("http://internal.example.com/")
@@ -301,10 +234,10 @@ def test_fetch_url_refuses_a_redirect_to_a_non_public_target(
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))]
     )
-    requested = _install_http(
+    requested = install_http(
         monkeypatch,
         {
-            "https://example.com/start": _Page(
+            "https://example.com/start": Page(
                 "https://example.com/start",
                 status_code=302,
                 headers={"location": "http://100.64.0.1/admin"},
@@ -324,15 +257,15 @@ def test_fetch_url_follows_a_redirect_to_a_public_target(
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))]
     )
-    requested = _install_http(
+    requested = install_http(
         monkeypatch,
         {
-            "https://example.com/start": _Page(
+            "https://example.com/start": Page(
                 "https://example.com/start",
                 status_code=302,
                 headers={"location": "/final"},
             ),
-            "https://example.com/final": _Page(
+            "https://example.com/final": Page(
                 "https://example.com/final", body=b"<p>Weekend delivery.</p>"
             ),
         },
@@ -347,10 +280,10 @@ def test_fetch_url_follows_a_redirect_to_a_public_target(
 def test_fetch_url_accepts_a_public_ip_literal_without_resolving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _forbid_dns(monkeypatch)
-    _install_http(
+    forbid_dns(monkeypatch)
+    install_http(
         monkeypatch,
-        {"http://[2606:4700::1111]/": _Page("http://[2606:4700::1111]/", body=b"ok")},
+        {"http://[2606:4700::1111]/": Page("http://[2606:4700::1111]/", body=b"ok")},
     )
 
     result = fetch.fetch_url("http://[2606:4700::1111]/")
@@ -367,28 +300,10 @@ def test_fetch_url_returns_visible_text(monkeypatch: pytest.MonkeyPatch) -> None
         b"<script>bad()</script><p>We deliver on Saturdays.</p></body></html>"
     )
 
-    class FakeResponse:
-        url = "https://example.com/delivery"
-        status_code = 200
-        encoding = "utf-8"
-        is_redirect = False
-        headers: ClassVar[dict[str, str]] = {}
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def iter_bytes(self) -> Iterator[bytes]:
-            yield html
-
-    class FakeClient:
-        def stream(self, method: str, url: str) -> Any:
-            return contextlib.nullcontext(FakeResponse())
-
-    @contextlib.contextmanager
-    def fake_client(**kwargs: Any) -> Iterator[FakeClient]:
-        yield FakeClient()
-
-    monkeypatch.setattr(fetch.httpx, "Client", fake_client)
+    install_http(
+        monkeypatch,
+        {"https://example.com/delivery": Page("https://example.com/delivery", body=html)},
+    )
 
     result = fetch.fetch_url("https://example.com/delivery")
 
@@ -396,6 +311,26 @@ def test_fetch_url_returns_visible_text(monkeypatch: pytest.MonkeyPatch) -> None
     assert "Weekend" in result["text"]
     assert "We deliver on Saturdays." in result["text"]
     assert "bad()" not in result["text"]
+
+
+def test_fetch_text_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 50)
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))]
+    )
+    install_http(
+        monkeypatch,
+        {
+            "https://example.com/long": Page(
+                "https://example.com/long", body=b"word " * 100
+            )
+        },
+    )
+
+    result = fetch.fetch_url("https://example.com/long")
+
+    assert len(result["text"]) == 50
+    assert result["truncated"] is True
 
 
 # ---------------------------------------------------------------------------
