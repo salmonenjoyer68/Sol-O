@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS agent_calls (
     started_at TEXT NOT NULL,
     duration_ms INTEGER NOT NULL,
     attempts INTEGER NOT NULL,
+    tool_turns INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     error_type TEXT,
     error_message TEXT,
@@ -119,6 +120,10 @@ def _ensure_columns(connection: sqlite3.Connection) -> None:
     agent_columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_calls)")}
     if "model" not in agent_columns:
         connection.execute("ALTER TABLE agent_calls ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+    if "tool_turns" not in agent_columns:
+        connection.execute(
+            "ALTER TABLE agent_calls ADD COLUMN tool_turns INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 @contextmanager
@@ -370,6 +375,7 @@ def save_agent_call(
     duration_ms: int,
     attempts: int,
     status: str,
+    tool_turns: int = 0,
     error_type: str | None = None,
     error_message: str | None = None,
     input_chars: int = 0,
@@ -383,9 +389,9 @@ def save_agent_call(
     with _connect() as connection:
         connection.execute(
             "INSERT INTO agent_calls"
-            " (run_id, step, agent, started_at, duration_ms, attempts, status,"
+            " (run_id, step, agent, started_at, duration_ms, attempts, tool_turns, status,"
             " error_type, error_message, input_chars, output_chars, raw_output, model)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 step,
@@ -393,6 +399,7 @@ def save_agent_call(
                 started_at,
                 int(duration_ms),
                 attempts,
+                int(tool_turns),
                 status,
                 error_type,
                 _redact_text(error_message) if error_message else None,

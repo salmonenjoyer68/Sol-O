@@ -100,7 +100,13 @@ class AgentRunError(RuntimeError):
     """An agent call failed: provider error, timeout, or invalid output after retries."""
 
     def __init__(
-        self, error_type: FailureType, detail: str, *, attempts: int, raw: str = ""
+        self,
+        error_type: FailureType,
+        detail: str,
+        *,
+        attempts: int,
+        tool_turns: int = 0,
+        raw: str = "",
     ) -> None:
         detail = redact(detail)
         super().__init__(detail)
@@ -108,6 +114,7 @@ class AgentRunError(RuntimeError):
         self.kind = error_type.value
         self.detail = detail
         self.attempts = attempts
+        self.tool_turns = tool_turns
         self.raw = redact(raw)
 
 
@@ -118,6 +125,7 @@ class AgentRun(Generic[OutputModel]):
     output: OutputModel
     attempts: int
     duration_seconds: float
+    tool_turns: int = 0
 
 
 def load_system_prompt(agent: str) -> str:
@@ -177,12 +185,15 @@ def call_validated(
     on_attempt: Callable[[int], None] | None = None,
     agent: str = "",
     toolset: Toolset | None = None,
-) -> tuple[OutputModel, int]:
+) -> tuple[OutputModel, int, int]:
     """Call the LLM with optional tool turns, validate, and retry on bad output.
 
     A planet may answer with a ``{"tool_requests": [...]}`` envelope instead of
     its normal output. The Sun runs those tools, appends the results, and calls
     the planet again, for at most ``settings.max_tool_turns`` turns per step.
+
+    Returns ``(output, attempts, tool_turns)``. ``attempts`` counts the LLM
+    calls spent producing and validating output; tool turns are not attempts.
     """
     tool_section = toolset.contract() if toolset is not None else ""
     messages: list[dict[str, str]] = [
@@ -214,11 +225,17 @@ def call_validated(
             raw = call_llm(messages, **kwargs)
         except LLMTimeoutError as exc:
             raise AgentRunError(
-                FailureType.TIMEOUT, str(exc), attempts=max(calls, exc.attempts)
+                FailureType.TIMEOUT,
+                str(exc),
+                attempts=max(calls - tool_turns, exc.attempts),
+                tool_turns=tool_turns,
             ) from exc
         except LLMError as exc:
             raise AgentRunError(
-                FailureType.LLM_ERROR, str(exc), attempts=max(calls, exc.attempts)
+                FailureType.LLM_ERROR,
+                str(exc),
+                attempts=max(calls - tool_turns, exc.attempts),
+                tool_turns=tool_turns,
             ) from exc
 
         error: OutputParseError | None = None
@@ -232,7 +249,7 @@ def call_validated(
             )
             if not is_envelope:
                 try:
-                    return model.model_validate(data), calls
+                    return model.model_validate(data), calls - tool_turns, tool_turns
                 except ValidationError as exc:
                     error = OutputParseError(
                         FailureType.SCHEMA_MISMATCH, f"schema validation failed: {exc}"
@@ -283,7 +300,13 @@ def call_validated(
             raise AssertionError("unreachable")
         attempts += 1
         if attempts >= max_attempts or calls >= max_calls:
-            raise AgentRunError(error.error_type, str(error), attempts=calls, raw=raw)
+            raise AgentRunError(
+                error.error_type,
+                str(error),
+                attempts=calls - tool_turns,
+                tool_turns=tool_turns,
+                raw=raw,
+            )
         logger.warning(
             "invalid output attempt=%d/%d type=%s: %s",
             attempts,
@@ -298,7 +321,8 @@ def call_validated(
     raise AgentRunError(
         FailureType.INVALID_JSON,
         f"no usable output after {calls} LLM call(s)",
-        attempts=calls,
+        attempts=calls - tool_turns,
+        tool_turns=tool_turns,
     )
 
 
@@ -318,7 +342,7 @@ def run_agent(
     started = time.perf_counter()
     try:
         system_prompt = load_system_prompt(agent)
-        output, attempts = call_validated(
+        output, attempts, tool_turns = call_validated(
             system_prompt,
             user_content,
             model,
@@ -331,10 +355,11 @@ def run_agent(
         )
     except AgentRunError as exc:
         logger.error(
-            "agent=%s task=%r attempts=%d duration=%.2fs result=%s",
+            "agent=%s task=%r attempts=%d tool_turns=%d duration=%.2fs result=%s",
             agent,
             _short(task),
             exc.attempts,
+            exc.tool_turns,
             time.perf_counter() - started,
             exc.kind,
         )
@@ -342,10 +367,13 @@ def run_agent(
 
     duration = time.perf_counter() - started
     logger.info(
-        "agent=%s task=%r attempts=%d duration=%.2fs result=ok",
+        "agent=%s task=%r attempts=%d tool_turns=%d duration=%.2fs result=ok",
         agent,
         _short(task),
         attempts,
+        tool_turns,
         duration,
     )
-    return AgentRun(output=output, attempts=attempts, duration_seconds=duration)
+    return AgentRun(
+        output=output, attempts=attempts, duration_seconds=duration, tool_turns=tool_turns
+    )

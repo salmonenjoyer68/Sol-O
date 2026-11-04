@@ -112,6 +112,7 @@ def _make_failure(
     message: str,
     raw: str = "",
     attempts: int = 0,
+    tool_turns: int = 0,
 ) -> Failure:
     return Failure(
         agent=agent,
@@ -119,6 +120,7 @@ def _make_failure(
         message=truncate(redact(message)),
         raw_output=truncate(redact(raw)),
         attempts=attempts,
+        tool_turns=tool_turns,
     )
 
 
@@ -181,6 +183,7 @@ def _run_logged_agent(
             started_at=started_at,
             duration_ms=_elapsed_ms(started),
             attempts=exc.attempts,
+            tool_turns=exc.tool_turns,
             status="failed",
             error_type=exc.error_type.value,
             error_message=exc.detail,
@@ -199,6 +202,7 @@ def _run_logged_agent(
         started_at=started_at,
         duration_ms=_elapsed_ms(started),
         attempts=run.attempts,
+        tool_turns=run.tool_turns,
         status="ok",
         input_chars=len(message),
         output_chars=len(raw_output),
@@ -580,7 +584,12 @@ def _orchestrate(
         status, failed_at, stopped_at = "failed", PLANNER_AGENT, PLANNER_AGENT
         reason = f"{exc.error_type.value}: {exc.detail}"
         failure = _make_failure(
-            PLANNER_AGENT, exc.error_type, f"planner failed: {exc.detail}", exc.raw, exc.attempts
+            PLANNER_AGENT,
+            exc.error_type,
+            f"planner failed: {exc.detail}",
+            exc.raw,
+            exc.attempts,
+            exc.tool_turns,
         )
         emit("stopped", step=0, agent=PLANNER_AGENT, status=status, reason=reason)
     except AgentNotFoundError as exc:
@@ -673,7 +682,7 @@ def _orchestrate(
             status, failed_at, stopped_at = "failed", step.agent, step.agent
             reason = "run_timeout" if run_timed_out else f"{exc.error_type.value}: {exc.detail}"
             failure = _make_failure(
-                step.agent, error_type, exc.detail, exc.raw, exc.attempts
+                step.agent, error_type, exc.detail, exc.raw, exc.attempts, exc.tool_turns
             )
             emit(
                 "agent_failed",
@@ -683,6 +692,7 @@ def _orchestrate(
                 error_type=error_type.value,
                 message=exc.detail,
                 attempts=exc.attempts,
+                tool_turns=exc.tool_turns,
             )
             emit("stopped", step=number, agent=step.agent, status=status, reason=reason)
             break
@@ -696,6 +706,7 @@ def _orchestrate(
                 task=step.task,
                 attempts=run.attempts,
                 duration_seconds=step_duration,
+                tool_turns=run.tool_turns,
                 output=output.model_dump(mode="json"),
             )
         )
@@ -705,6 +716,7 @@ def _orchestrate(
             agent=step.agent,
             status=output.status,
             attempts=run.attempts,
+            tool_turns=run.tool_turns,
             duration_seconds=step_duration,
             summary=_summary(step.agent, output.model_dump(mode="json")),
         )
