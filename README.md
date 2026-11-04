@@ -33,7 +33,7 @@ Planets may ask the Sun to run a tool before answering: they return `{"tool_requ
 | Tool | What it returns | Available to |
 | --- | --- | --- |
 | `kb_search` | matching chunks from `kb/**/*.md`/`*.txt` with their path | researcher, writer, checker |
-| `fetch_url` | visible text of one public http(s) page (SSRF-guarded, 6k chars) | researcher |
+| `fetch_url` | visible text of one public http(s) page (SSRF-guarded: globally routable addresses only, 6k chars) | researcher |
 | `calc` | safe arithmetic and `days_between()`/`today()` results | writer, checker |
 | `recall` | earlier runs **from the same `source`** only | researcher, writer |
 
