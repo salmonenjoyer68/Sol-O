@@ -57,7 +57,7 @@ Sol-O is a Python multi-agent orchestration platform. The Sun orchestrator and t
 
 ## Phase 4/5 contracts
 
-- `app/config.py` loads `.env` once into `settings`: `LLM_TIMEOUT_SECONDS` (30), `LLM_MAX_RETRIES` (2), `TOOL_TIMEOUT_SECONDS` (15), `RUN_TIMEOUT_SECONDS` (180), `MAX_AGENTS` (7), `REQUIRE_APPROVAL` (true), `AUTO_APPROVE` (false), `PENDING_TTL_HOURS` (24), `MAX_INPUT_CHARS` (8000). Never hardcode these values elsewhere.
+- `app/config.py` loads `.env` once into `settings`: `LLM_TIMEOUT_SECONDS` (30), `LLM_MAX_RETRIES` (2), `TOOL_TIMEOUT_SECONDS` (15), `RUN_TIMEOUT_SECONDS` (180), `MAX_AGENTS` (7), `REQUIRE_APPROVAL` (true), `AUTO_APPROVE` (false), `PENDING_TTL_HOURS` (24), `MAX_INPUT_CHARS` (8000), `AGENT_MODELS` (empty; comma-separated `agent=model` overrides parsed once at load, malformed entries skipped with a warning, `MODEL` is the fallback), `MAX_TOOL_TURNS` (3), `MAX_RESULT_CHARS` (6000), `MAX_ARGS_CHARS` (500). Never hardcode these values elsewhere.
 - `app/reliability.py` owns `call_with_retries` (1s/2s/4s backoff), `Deadline`, `redact`, and the root-handler `RedactFilter`. LLM retries only timeout/connection/429/5xx; 4xx fails immediately. Tools retry once on timeout/5xx. Redaction covers env secrets, `sk-...`, `bot<id>:...` and bearer tokens, including httpx request URLs.
 - The whole run uses `RUN_TIMEOUT_SECONDS`; exhaustion yields `status="failed"`, `reason="run_timeout"`, `error_type="timeout"`. Per-call timeout is `min(LLM_TIMEOUT_SECONDS, remaining)`.
 - Tasks over `MAX_INPUT_CHARS` are truncated and the run row/result carry `warning`.

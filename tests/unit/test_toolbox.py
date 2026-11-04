@@ -9,11 +9,11 @@ from typing import Any
 import pytest
 
 from app import agents as agents_module
+from app import config, orchestrator, toolbox
 from app import logger as run_store
-from app import orchestrator, toolbox
 from app.config import settings as config_settings
 from app.reliability import Deadline, run_deadline
-from app.schemas import FailureType, WriterOutput
+from app.schemas import AgentOutput, FailureType, WriterOutput
 from app.toolbox import Tool, Toolset
 
 RUN_ID = "run-tool-test"
@@ -78,7 +78,6 @@ class ScriptedLLM:
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOL_O_DB", str(tmp_path / "runs.db"))
     monkeypatch.setenv("DRY_RUN", "true")
-    monkeypatch.delenv("AGENT_MODELS", raising=False)
     run_store.start_run(RUN_ID, "customer asks about weekend delivery", source="email:dana")
 
 
@@ -166,12 +165,90 @@ def test_tool_turn_cap_stops_execution_and_demands_a_final_answer(
         agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
 
     assert excinfo.value.error_type is FailureType.SCHEMA_MISMATCH
-    assert len(calls) == toolbox.MAX_TOOL_TURNS
+    assert len(calls) == config_settings.max_tool_turns
     assert excinfo.value.attempts == 6
     assert len(fake.calls) == 6
     assert any(
         "Tool budget is exhausted" in turn for turn in fake.user_turns()
     )
+
+
+def test_tool_turn_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        calls.append(args)
+        return "still working"
+
+    monkeypatch.setattr(config_settings, "max_tool_turns", 1)
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend")] * 10)
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    with pytest.raises(agents_module.AgentRunError):
+        agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert len(calls) == 1
+    assert "at most 1 tool turn" in fake.calls[0][0]["content"]
+
+
+def test_result_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 120)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    tool_results = fake.user_turns()[1].split("\n", 1)[1]
+    payload = json.loads(tool_results)
+    assert "x" * 500 not in tool_results
+    assert len(json.dumps(payload[0], ensure_ascii=False)) <= 120
+
+
+def test_audited_args_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_settings, "max_args_chars", 20)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "ok")
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="q" * 100), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert len(detail["tool_calls"][0]["args"]) <= 20
+
+
+def test_limits_loaded_from_environment_drive_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        calls.append(args)
+        return "still working"
+
+    monkeypatch.setenv("MAX_TOOL_TURNS", "1")
+    monkeypatch.setenv("MAX_RESULT_CHARS", "123")
+    monkeypatch.setenv("MAX_ARGS_CHARS", "17")
+    loaded = config.load_settings()
+    monkeypatch.setattr(config_settings, "max_tool_turns", loaded.max_tool_turns)
+    monkeypatch.setattr(config_settings, "max_result_chars", loaded.max_result_chars)
+    monkeypatch.setattr(config_settings, "max_args_chars", loaded.max_args_chars)
+
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend")] * 10)
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    with pytest.raises(agents_module.AgentRunError):
+        agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert len(calls) == 1
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert len(detail["tool_calls"][0]["args"]) <= 17
 
 
 def test_unknown_tool_is_refused_without_running_anything(
@@ -249,8 +326,11 @@ def test_an_agent_without_a_toolset_cannot_request_tools(
     assert len(fake.calls) == 3
 
 
-def test_agent_models_env_routes_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AGENT_MODELS", "writer=qwen2.5:14b")
+def test_agent_model_override_routes_only_the_named_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "agent_models", {"writer": "qwen2.5:14b"})
+    monkeypatch.setenv("MODEL", "fallback-model")
     seen: list[dict[str, Any]] = []
 
     def fake(
@@ -260,13 +340,43 @@ def test_agent_models_env_routes_one_agent(monkeypatch: pytest.MonkeyPatch) -> N
         **extra: Any,
     ) -> str:
         seen.append({"agent_prompt": messages[0]["content"][:20], **extra})
-        return json.dumps(WRITER)
+        return json.dumps(WRITER if len(seen) == 1 else RESEARCHER)
 
     monkeypatch.setattr(agents_module, "call_llm", fake)
     agents_module.run_agent("writer", "write the reply", WriterOutput)
+    agents_module.run_agent("researcher", "research it", AgentOutput)
 
     assert seen[0].get("model") == "qwen2.5:14b"
-    assert len(seen) == 1
+    assert "model" not in seen[1]
+
+
+def test_malformed_agent_model_override_falls_back_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AGENT_MODELS", "writer=,researcher=qwen2.5:7b,broken")
+    with caplog.at_level("WARNING", logger="sol_o.config"):
+        loaded = config.load_settings()
+    assert loaded.agent_models == {"researcher": "qwen2.5:7b"}
+    assert "AGENT_MODELS" in caplog.text
+
+    monkeypatch.setattr(config_settings, "agent_models", loaded.agent_models)
+    seen: list[dict[str, Any]] = []
+
+    def fake(
+        messages: list[dict[str, str]],
+        response_schema: dict | None = None,
+        timeout: float | None = None,
+        **extra: Any,
+    ) -> str:
+        seen.append(extra)
+        return json.dumps(WRITER)
+
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+    run = agents_module.run_agent("writer", "write the reply", WriterOutput)
+
+    assert run.output.draft == WRITER["draft"]
+    assert "model" not in seen[0]
 
 
 class RoutedLLM:
@@ -313,3 +423,24 @@ def test_orchestrate_records_source_and_executed_tools(
     tools = [row["tool"] for row in detail["tool_calls"]]
     assert "kb_search" in tools
     assert all(row["args"] for row in detail["tool_calls"] if row["tool"] == "kb_search")
+
+
+def test_orchestrate_records_the_routed_model_on_each_agent_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "auto_approve", True)
+    monkeypatch.setattr(config_settings, "agent_models", {"writer": "qwen2.5:14b"})
+    monkeypatch.setenv("MODEL", "fallback-model")
+    monkeypatch.setattr(orchestrator, "search", lambda query, max_results=5: [])
+    monkeypatch.setattr(agents_module, "call_llm", RoutedLLM())
+
+    result = orchestrator.orchestrate(
+        "A customer asks: do you deliver on weekends?", source="email:dana"
+    )
+
+    detail = run_store.get_run_detail(result.run_id or "")
+    assert detail is not None
+    models = {row["agent"]: row["model"] for row in detail["agent_calls"]}
+    assert models["writer"] == "qwen2.5:14b"
+    assert models["researcher"] == "fallback-model"
+    assert models["checker"] == "fallback-model"

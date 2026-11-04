@@ -21,7 +21,7 @@ from app.config import settings
 from app.llm import LLMError, LLMTimeoutError, call_llm, model_for
 from app.reliability import redact
 from app.schemas import AgentOutput, FailureType, ToolRequests
-from app.toolbox import MAX_TOOL_TURNS, Toolset
+from app.toolbox import Toolset
 
 logger = logging.getLogger("sol_o.agents")
 
@@ -182,7 +182,7 @@ def call_validated(
 
     A planet may answer with a ``{"tool_requests": [...]}`` envelope instead of
     its normal output. The Sun runs those tools, appends the results, and calls
-    the planet again, for at most ``MAX_TOOL_TURNS`` turns per step.
+    the planet again, for at most ``settings.max_tool_turns`` turns per step.
     """
     tool_section = toolset.contract() if toolset is not None else ""
     messages: list[dict[str, str]] = [
@@ -195,7 +195,7 @@ def call_validated(
 
     request_model = model_for(agent) if agent else None
     max_attempts = 1 + max(0, settings.llm_max_retries)
-    max_calls = max_attempts + (MAX_TOOL_TURNS if toolset else 0)
+    max_calls = max_attempts + (settings.max_tool_turns if toolset else 0)
     tool_turns = 0
     attempts = 0
     calls = 0
@@ -251,7 +251,7 @@ def call_validated(
                         FailureType.SCHEMA_MISMATCH, f"invalid tool_requests: {exc}"
                     )
                 else:
-                    if tool_turns >= MAX_TOOL_TURNS or calls >= max_calls:
+                    if tool_turns >= settings.max_tool_turns or calls >= max_calls:
                         error = OutputParseError(
                             FailureType.SCHEMA_MISMATCH, TOOL_BUDGET_INSTRUCTION
                         )

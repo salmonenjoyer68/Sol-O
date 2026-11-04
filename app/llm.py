@@ -40,15 +40,10 @@ class LLMTimeoutError(LLMError):
 
 
 def model_for(agent: str | None) -> str | None:
-    """Resolve ``AGENT_MODELS="researcher=qwen2.5:7b,writer=qwen2.5:14b"`` for one agent."""
+    """Resolve the loaded ``AGENT_MODELS`` override for one agent."""
     if not agent:
         return None
-    raw = os.getenv("AGENT_MODELS", "")
-    for pair in raw.split(","):
-        name, _, model = pair.partition("=")
-        if name.strip() == agent and model.strip():
-            return model.strip()
-    return None
+    return settings.agent_models.get(agent)
 
 
 def resolved_model(agent: str | None) -> str:

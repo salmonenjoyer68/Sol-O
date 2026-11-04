@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -61,6 +61,26 @@ def _bool(name: str, default: bool) -> bool:
     return default
 
 
+def _agent_models(name: str) -> dict[str, str]:
+    """Parse ``AGENT_MODELS="researcher=qwen2.5:7b,writer=qwen2.5:14b"`` once.
+
+    A malformed pair is skipped with a warning so one typo cannot break a run;
+    the agent then keeps the ``MODEL`` fallback.
+    """
+    raw = os.getenv(name, "").strip()
+    models: dict[str, str] = {}
+    if not raw:
+        return models
+    for pair in raw.split(","):
+        agent, separator, model = pair.partition("=")
+        agent, model = agent.strip(), model.strip()
+        if not separator or not agent or not model:
+            logger.warning("invalid %s entry %r; skipping", name, pair.strip())
+            continue
+        models[agent] = model
+    return models
+
+
 @dataclass
 class Settings:
     """Runtime configuration; mutable so tests can override a single field."""
@@ -74,6 +94,10 @@ class Settings:
     auto_approve: bool = False
     pending_ttl_hours: float = 24.0
     max_input_chars: int = 8000
+    agent_models: dict[str, str] = field(default_factory=dict)
+    max_tool_turns: int = 3
+    max_result_chars: int = 6000
+    max_args_chars: int = 500
 
 
 def load_settings() -> Settings:
@@ -88,6 +112,10 @@ def load_settings() -> Settings:
         auto_approve=_bool("AUTO_APPROVE", False),
         pending_ttl_hours=_float("PENDING_TTL_HOURS", 24.0, 0.0),
         max_input_chars=_int("MAX_INPUT_CHARS", 8000, 1),
+        agent_models=_agent_models("AGENT_MODELS"),
+        max_tool_turns=_int("MAX_TOOL_TURNS", 3, 1),
+        max_result_chars=_int("MAX_RESULT_CHARS", 6000, 1),
+        max_args_chars=_int("MAX_ARGS_CHARS", 500, 1),
     )
 
 
