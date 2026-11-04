@@ -118,6 +118,7 @@ class Failure(BaseModel):
     message: str
     raw_output: str = ""
     attempts: int = 0
+    tool_turns: int = 0
 
 
 class OrchestrationRequest(BaseModel):
@@ -159,6 +160,7 @@ class StepResult(BaseModel):
     attempts: int
     duration_seconds: float
     output: dict[str, Any]
+    tool_turns: int = 0
 
 
 class OrchestrationResult(BaseModel):

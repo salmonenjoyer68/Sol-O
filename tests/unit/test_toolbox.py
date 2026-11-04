@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from app import agents as agents_module
+from app import config, orchestrator, toolbox
 from app import logger as run_store
-from app import orchestrator, toolbox
 from app.config import settings as config_settings
 from app.reliability import Deadline, run_deadline
-from app.schemas import FailureType, WriterOutput
+from app.schemas import AgentOutput, FailureType, WriterOutput
 from app.toolbox import Tool, Toolset
+from tests.unit.fakes import Page, install_http
+from tools import kb
 
 RUN_ID = "run-tool-test"
 
@@ -78,7 +81,6 @@ class ScriptedLLM:
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOL_O_DB", str(tmp_path / "runs.db"))
     monkeypatch.setenv("DRY_RUN", "true")
-    monkeypatch.delenv("AGENT_MODELS", raising=False)
     run_store.start_run(RUN_ID, "customer asks about weekend delivery", source="email:dana")
 
 
@@ -135,11 +137,12 @@ def test_envelope_runs_the_tool_then_returns_the_validated_output(
     run = agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
 
     assert run.output.draft == WRITER["draft"]
-    assert run.attempts == 2
+    assert run.attempts == 1
+    assert run.tool_turns == 1
     assert calls == [{"query": "weekend"}]
     assert "Tool results (JSON):" in fake.user_turns()[1]
     assert "kb/delivery.md" in fake.user_turns()[1]
-    assert "## Tools you may call" in fake.calls[0][0]["content"]
+    assert "## Tool envelope (runtime contract)" in fake.calls[0][0]["content"]
     assert [event for event, _ in events] == ["tool_requested", "tool_done"]
 
     detail = run_store.get_run_detail(RUN_ID)
@@ -147,6 +150,22 @@ def test_envelope_runs_the_tool_then_returns_the_validated_output(
     rows = detail["tool_calls"]
     assert [(row["tool"], row["status"]) for row in rows] == [("kb_search", "ok")]
     assert "weekend" in rows[0]["args"]
+
+
+def test_a_retry_after_a_tool_turn_counts_only_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "still working")
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="weekend"), "not json", json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    run = agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert run.output.draft == WRITER["draft"]
+    assert run.tool_turns == 1
+    assert run.attempts == 2
 
 
 def test_tool_turn_cap_stops_execution_and_demands_a_final_answer(
@@ -166,12 +185,367 @@ def test_tool_turn_cap_stops_execution_and_demands_a_final_answer(
         agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
 
     assert excinfo.value.error_type is FailureType.SCHEMA_MISMATCH
-    assert len(calls) == toolbox.MAX_TOOL_TURNS
-    assert excinfo.value.attempts == 6
-    assert len(fake.calls) == 6
+    assert len(calls) == config_settings.max_tool_turns
+    assert excinfo.value.tool_turns == config_settings.max_tool_turns
+    assert excinfo.value.attempts == 1 + config_settings.llm_max_retries
+    assert len(fake.calls) == (
+        1 + config_settings.llm_max_retries + config_settings.max_tool_turns
+    )
     assert any(
         "Tool budget is exhausted" in turn for turn in fake.user_turns()
     )
+
+
+def test_tool_turn_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        calls.append(args)
+        return "still working"
+
+    monkeypatch.setattr(config_settings, "max_tool_turns", 1)
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend")] * 10)
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    with pytest.raises(agents_module.AgentRunError):
+        agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert len(calls) == 1
+    assert "at most 1 tool turn" in fake.calls[0][0]["content"]
+
+
+def test_result_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 120)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    tool_results = fake.user_turns()[1].split("\n", 1)[1]
+    payload = json.loads(tool_results)
+    assert "x" * 500 not in tool_results
+    assert len(json.dumps(payload[0], ensure_ascii=False)) <= 120
+
+
+def _fed_back(fake: ScriptedLLM, turn: int = 1) -> Any:
+    """The JSON a planet receives after asking for one tool."""
+    return json.loads(fake.user_turns()[turn].split("\n", 1)[1])
+
+
+def test_an_oversized_string_result_is_clipped_not_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 200)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "head-" + "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert payload["result"].startswith("head-")
+    assert payload["result"].endswith("…")
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 200
+
+
+def test_a_pathologically_small_cap_still_returns_a_usable_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 40)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: ["x" * 100])
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert "…truncated…" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_an_oversized_list_result_drops_the_tail_and_keeps_the_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 320)
+    items = [
+        {"path": "kb/delivery.md", "text": f"item-{index} " + "y" * 80} for index in range(10)
+    ]
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: items)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    kept = payload["result"]
+    assert payload["truncated"] is True
+    assert 1 <= len(kept) < len(items)
+    assert kept == items[: len(kept)]
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 320
+
+
+def test_the_last_remaining_list_item_is_clipped_when_dropping_is_not_enough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 220)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: ["first item " + "z" * 800])
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is True
+    assert payload["result"][0].startswith("first item")
+    assert len(payload["result"][0]) < 800
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 220
+
+
+def test_an_oversized_dict_result_clips_its_longest_text_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 400)
+    result = {
+        "url": "https://example.com/delivery",
+        "status": 200,
+        "text": "page text " * 200,
+        "note": "short",
+    }
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: result)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    kept = payload["result"]
+    assert payload["truncated"] is True
+    assert kept["url"] == result["url"]
+    assert kept["status"] == 200
+    assert kept["note"] == "short"
+    assert kept["text"].startswith("page text ")
+    assert len(kept["text"]) < len(result["text"])
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 400
+
+
+def test_tool_done_carries_the_truncated_flag_for_a_trimmed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 120)
+    events: list[tuple[str, dict[str, Any]]] = []
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "w" * 500, events=events)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    done = dict(events)["tool_done"]
+    assert done["truncated"] is True
+
+
+def test_an_untrimmed_result_is_flagged_as_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "small", events=events)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is False
+    assert dict(events)["tool_done"]["truncated"] is False
+
+
+@pytest.mark.parametrize("inner", [True, False])
+def test_a_tool_that_reports_its_own_truncation_flags_the_envelope(
+    monkeypatch: pytest.MonkeyPatch, inner: bool
+) -> None:
+    result = {"url": "https://example.com/delivery", "text": "short", "truncated": inner}
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: result)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["truncated"] is inner
+    assert payload["result"]["truncated"] is inner
+
+
+def test_a_cap_smaller_than_the_envelope_keeps_the_audit_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_chars", 20)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "x" * 500)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend"), json.dumps(WRITER)])
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    assert payload["tool"] == "kb_search"
+    assert payload["ok"] is True
+    assert payload["truncated"] is True
+    assert payload["result"] == ""
+    # The fixed envelope alone exceeds this cap; it survives intact rather than
+    # dropping the audit fields, and the over-cap outcome is explicit.
+    assert len(json.dumps(payload, ensure_ascii=False)) > 20
+
+
+def test_an_absurd_requested_limit_is_clamped_before_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "max_result_items", 4)
+    seen: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        seen.append(args)
+        return "ok"
+
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="weekend", limit=10_000), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert seen == [{"query": "weekend", "limit": 4}]
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert json.loads(detail["tool_calls"][0]["args"])["limit"] == 4
+
+
+def test_a_near_cap_fetch_reaches_the_planet_with_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_text = "Weekend delivery costs 4.99. " * 240
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))],
+    )
+
+    install_http(
+        monkeypatch,
+        {
+            "https://example.com/delivery": Page(
+                "https://example.com/delivery", body=f"<p>{page_text}</p>".encode()
+            )
+        },
+    )
+    toolset = Toolset(
+        agent="researcher",
+        step=1,
+        run_id=RUN_ID,
+        source="email:dana",
+        deadline=run_deadline(60),
+        emit=lambda event, **data: None,
+    )
+    fake = ScriptedLLM(
+        [envelope("fetch_url", url="https://example.com/delivery"), json.dumps(RESEARCHER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("researcher", "research it", AgentOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    result = payload["result"]
+    assert payload["tool"] == "fetch_url"
+    assert payload["ok"] is True
+    assert result["url"] == "https://example.com/delivery"
+    assert result["text"].startswith("Weekend delivery costs 4.99.")
+    assert len(result["text"]) > 5000
+    assert payload["truncated"] is True
+    assert len(json.dumps(payload, ensure_ascii=False)) <= config_settings.max_result_chars
+
+
+def test_a_near_cap_knowledge_result_reaches_the_planet_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "kb"
+    root.mkdir()
+    blocks = "\n\n".join(f"Delivery {index} " + "d" * 690 for index in range(7))
+    (root / "notes.md").write_text(blocks, encoding="utf-8")
+    monkeypatch.setattr(kb, "KB_DIR", root)
+    monkeypatch.setattr(kb, "_index", None)
+    monkeypatch.setattr(config_settings, "max_result_chars", 6000)
+    toolset = Toolset(
+        agent="writer",
+        step=1,
+        run_id=RUN_ID,
+        source="email:dana",
+        deadline=run_deadline(60),
+        emit=lambda event, **data: None,
+    )
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="delivery", limit=7), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    payload = _fed_back(fake)[0]
+    chunks = payload["result"]
+    assert payload["tool"] == "kb_search"
+    assert payload["truncated"] is False
+    assert len(chunks) == 7
+    assert sum(len(chunk["text"]) for chunk in chunks) > 4000
+    assert all(chunk["text"].startswith("Delivery ") for chunk in chunks)
+
+
+def test_audited_args_cap_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_settings, "max_args_chars", 20)
+    toolset = make_toolset(monkeypatch, lambda _args, _ctx: "ok")
+    fake = ScriptedLLM(
+        [envelope("kb_search", query="q" * 100), json.dumps(WRITER)]
+    )
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert len(detail["tool_calls"][0]["args"]) <= 20
+
+
+def test_limits_loaded_from_environment_drive_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(args: dict[str, Any], _ctx: Any) -> str:
+        calls.append(args)
+        return "still working"
+
+    monkeypatch.setenv("MAX_TOOL_TURNS", "1")
+    monkeypatch.setenv("MAX_RESULT_CHARS", "123")
+    monkeypatch.setenv("MAX_ARGS_CHARS", "17")
+    loaded = config.load_settings()
+    monkeypatch.setattr(config_settings, "max_tool_turns", loaded.max_tool_turns)
+    monkeypatch.setattr(config_settings, "max_result_chars", loaded.max_result_chars)
+    monkeypatch.setattr(config_settings, "max_args_chars", loaded.max_args_chars)
+
+    toolset = make_toolset(monkeypatch, handler)
+    fake = ScriptedLLM([envelope("kb_search", query="weekend")] * 10)
+    monkeypatch.setattr(agents_module, "call_llm", fake)
+
+    with pytest.raises(agents_module.AgentRunError):
+        agents_module.run_agent("writer", "write the reply", WriterOutput, toolset=toolset)
+
+    assert len(calls) == 1
+    detail = run_store.get_run_detail(RUN_ID)
+    assert detail is not None
+    assert len(detail["tool_calls"][0]["args"]) <= 17
 
 
 def test_unknown_tool_is_refused_without_running_anything(
@@ -249,8 +623,11 @@ def test_an_agent_without_a_toolset_cannot_request_tools(
     assert len(fake.calls) == 3
 
 
-def test_agent_models_env_routes_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AGENT_MODELS", "writer=qwen2.5:14b")
+def test_agent_model_override_routes_only_the_named_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "agent_models", {"writer": "qwen2.5:14b"})
+    monkeypatch.setenv("MODEL", "fallback-model")
     seen: list[dict[str, Any]] = []
 
     def fake(
@@ -260,13 +637,14 @@ def test_agent_models_env_routes_one_agent(monkeypatch: pytest.MonkeyPatch) -> N
         **extra: Any,
     ) -> str:
         seen.append({"agent_prompt": messages[0]["content"][:20], **extra})
-        return json.dumps(WRITER)
+        return json.dumps(WRITER if len(seen) == 1 else RESEARCHER)
 
     monkeypatch.setattr(agents_module, "call_llm", fake)
     agents_module.run_agent("writer", "write the reply", WriterOutput)
+    agents_module.run_agent("researcher", "research it", AgentOutput)
 
     assert seen[0].get("model") == "qwen2.5:14b"
-    assert len(seen) == 1
+    assert "model" not in seen[1]
 
 
 class RoutedLLM:
@@ -310,6 +688,30 @@ def test_orchestrate_records_source_and_executed_tools(
     detail = run_store.get_run_detail(result.run_id or "")
     assert detail is not None
     assert detail["run"]["source"] == "email:dana"
+    writer_call = next(row for row in detail["agent_calls"] if row["agent"] == "writer")
+    assert writer_call["tool_turns"] == 1
+    assert writer_call["attempts"] == 1
     tools = [row["tool"] for row in detail["tool_calls"]]
     assert "kb_search" in tools
     assert all(row["args"] for row in detail["tool_calls"] if row["tool"] == "kb_search")
+
+
+def test_orchestrate_records_the_routed_model_on_each_agent_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config_settings, "auto_approve", True)
+    monkeypatch.setattr(config_settings, "agent_models", {"writer": "qwen2.5:14b"})
+    monkeypatch.setenv("MODEL", "fallback-model")
+    monkeypatch.setattr(orchestrator, "search", lambda query, max_results=5: [])
+    monkeypatch.setattr(agents_module, "call_llm", RoutedLLM())
+
+    result = orchestrator.orchestrate(
+        "A customer asks: do you deliver on weekends?", source="email:dana"
+    )
+
+    detail = run_store.get_run_detail(result.run_id or "")
+    assert detail is not None
+    models = {row["agent"]: row["model"] for row in detail["agent_calls"]}
+    assert models["writer"] == "qwen2.5:14b"
+    assert models["researcher"] == "fallback-model"
+    assert models["checker"] == "fallback-model"

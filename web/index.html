@@ -364,9 +364,15 @@ function renderLog() {
 
 function summariseEvent(name, data) {
   if (!data) return "";
+  if (name === "tool_done") {
+    const step = data.step != null ? `#${data.step} ` : "";
+    const agent = data.agent ? `${data.agent} ` : "";
+    const trimmed = data.truncated ? " · trimmed" : "";
+    return `${step}${agent}${data.tool} ${data.ok ? "ok" : "failed"}${trimmed}`;
+  }
   if (data.agent) {
     const step = data.step != null ? `#${data.step} ` : "";
-    const extra = data.status || data.error_type || (data.attempt ? `attempt ${data.attempt}` : "");
+    const extra = data.status || data.error_type || (data.call ? `call ${data.call}` : "");
     return `${step}${data.agent}${extra ? " " + extra : ""}`;
   }
   if (name === "run_started") return String(data.task || "").slice(0, 90);
@@ -376,7 +382,6 @@ function summariseEvent(name, data) {
   if (name === "all_done") return `${data.status} in ${data.seconds}s`;
   if (name === "run_failed") return `${data.error_type} at ${data.failed_at}`;
   if (name === "search_done") return `${data.results} results`;
-  if (name === "tool_done") return `${data.tool} ${data.ok ? "ok" : "failed"}`;
   return JSON.stringify(data).slice(0, 90);
 }
 
@@ -452,6 +457,7 @@ function planetFor(step, agent, placeholder) {
     failed: false,
     summary: "",
     attempts: 1,
+    calls: 1,
     error: "",
     calledAt: 0,
     doneAt: 0,
@@ -531,8 +537,8 @@ function applyEvent(record) {
       }
       const planet = planetFor(data.step, data.agent, false);
       planet.working = true;
-      planet.attempts = Math.max(planet.attempts, data.attempt || 1);
-      setSun("orchestrating", `${data.agent} working${planet.attempts > 1 ? " · attempt " + planet.attempts : ""}`);
+      planet.calls = Math.max(planet.calls, data.call || 1);
+      setSun("orchestrating", `${data.agent} working${planet.calls > 1 ? " · call " + planet.calls : ""}`);
       break;
     }
     case "agent_done": {
@@ -599,7 +605,8 @@ function applyEvent(record) {
       break;
     }
     case "tool_done": {
-      setSun("orchestrating", `${data.tool} ${data.ok ? "done" : "failed"}`);
+      const trimmed = data.truncated ? " · trimmed" : "";
+      setSun("orchestrating", `${data.tool} ${data.ok ? "done" : "failed"}${trimmed}`);
       break;
     }
     case "stopped": {
