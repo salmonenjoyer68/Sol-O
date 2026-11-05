@@ -680,10 +680,7 @@ fn a_clarification_stops_the_run_before_any_later_planet() {
     assert_eq!(detail["run"]["outputs"].as_array().unwrap().len(), 1);
     assert_eq!(provider.requests().len(), 1, "no later planet may be called");
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "all_done");
     let events: Vec<&str> = saved
         .iter()
         .map(|event| event["event"].as_str().unwrap())
@@ -752,10 +749,7 @@ fn exhausted_validation_attempts_fail_the_run_and_truncate_the_audit() {
     assert_eq!(outputs[0]["agent"], "researcher");
     assert_eq!(provider.requests().len(), 4, "three writer attempts, no later step");
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "run_failed");
     let events: Vec<&str> = saved
         .iter()
         .map(|event| event["event"].as_str().unwrap())
@@ -898,10 +892,7 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
     );
     assert_eq!(outputs[4]["output"]["verdict"], "needs_changes");
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "all_done");
     let events: Vec<&str> = saved
         .iter()
         .map(|event| event["event"].as_str().unwrap())
@@ -1002,10 +993,7 @@ fn each_call_is_bounded_by_the_remaining_run_budget() {
     assert_eq!(detail["run"]["status"], "failed");
     assert_eq!(provider.requests().len(), 1);
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "run_failed");
     let events: Vec<&str> = saved
         .iter()
         .map(|event| event["event"].as_str().unwrap())
@@ -1089,10 +1077,7 @@ fn an_expired_budget_fails_before_the_first_agent_without_calling_the_provider()
     assert_eq!(detail["agent_calls"], json!([]));
     assert!(provider.requests().is_empty());
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "run_failed");
     let events: Vec<&str> = saved
         .iter()
         .map(|event| event["event"].as_str().unwrap())
@@ -1161,10 +1146,7 @@ fn an_over_long_task_is_truncated_and_the_warning_is_stored() {
         "task truncated from 16 to 10 characters"
     );
 
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "all_done");
     assert_eq!(saved[0]["data"]["task"], "abcdefghij");
     assert_eq!(saved[1]["data"]["steps"][0]["task"], "abcdefghij");
     assert!(provider.requests()[0].contents()[1].starts_with(
