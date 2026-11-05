@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use tracing::warn;
 
-use crate::config::{Settings, ROOT};
+use crate::config::Settings;
 use crate::llm::{self, Message};
 use crate::reliability::redact;
 use crate::schemas::{agent_output_schema, AgentOutput};
@@ -69,8 +69,6 @@ pub struct AgentOutcome {
     pub output: AgentOutput,
     /// Validation attempts; the successful call counts.
     pub attempts: usize,
-    /// The validated output serialized as JSON, for the audit row.
-    pub raw: String,
     pub duration_ms: i64,
 }
 
@@ -80,18 +78,18 @@ struct ParseError {
     message: String,
 }
 
-/// Read `agents/<agent>.md` on every request.
-fn load_system_prompt(agent: &str) -> Result<String, RunError> {
+/// Read `<agents_dir>/<agent>.md` on every request.
+fn load_system_prompt(agents_dir: &Path, agent: &str) -> Result<String, RunError> {
     if !AGENT_NAME.is_match(agent) {
         return Err(RunError::NotFound(agent.to_string()));
     }
-    let path = Path::new(ROOT).join("agents").join(format!("{agent}.md"));
-    match std::fs::read_to_string(path) {
+    let path = agents_dir.join(format!("{agent}.md"));
+    match std::fs::read_to_string(&path) {
         Ok(prompt) => Ok(prompt),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Err(RunError::NotFound(agent.to_string()))
         }
-        Err(error) => Err(RunError::Unreadable(error.to_string())),
+        Err(error) => Err(RunError::Unreadable(format!("{}: {error}", path.display()))),
     }
 }
 
@@ -114,9 +112,14 @@ fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
 }
 
 /// Call the provider, validate, and retry malformed output up to `LLM_MAX_RETRIES`.
-pub fn run_agent(settings: &Settings, agent: &str, task: &str) -> Result<AgentOutcome, RunError> {
+pub fn run_agent(
+    settings: &Settings,
+    agents_dir: &Path,
+    agent: &str,
+    task: &str,
+) -> Result<AgentOutcome, RunError> {
     let started = Instant::now();
-    let system_prompt = load_system_prompt(agent)?;
+    let system_prompt = load_system_prompt(agents_dir, agent)?;
     let schema = agent_output_schema();
     let model_override = llm::model_for(settings, agent);
     let timeout = Duration::from_secs_f64(settings.llm_timeout_seconds.max(0.001));
@@ -152,7 +155,6 @@ pub fn run_agent(settings: &Settings, agent: &str, task: &str) -> Result<AgentOu
         match parse_output(&raw) {
             Ok(output) => {
                 return Ok(AgentOutcome {
-                    raw: serde_json::to_string(&output).unwrap_or_default(),
                     output,
                     attempts: attempts + 1,
                     duration_ms: started.elapsed().as_millis() as i64,
@@ -188,6 +190,7 @@ pub fn run_agent(settings: &Settings, agent: &str, task: &str) -> Result<AgentOu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ROOT;
 
     #[test]
     fn contract_matches_the_reference_text() {
@@ -207,8 +210,9 @@ mod tests {
 
     #[test]
     fn unsafe_agent_names_are_unknown_agents() {
+        let agents_dir = Path::new(ROOT).join("agents");
         for name in ["../researcher", "researcher/../x", "", "a b"] {
-            match load_system_prompt(name) {
+            match load_system_prompt(&agents_dir, name) {
                 Err(RunError::NotFound(_)) => {}
                 other => panic!("{name:?} should be unknown, got {other:?}"),
             }

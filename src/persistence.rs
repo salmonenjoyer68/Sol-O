@@ -13,31 +13,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::ROOT;
-use crate::reliability::{redact, redact_value, truncate};
+use crate::reliability::redact_value;
 
 pub type DbResult<T> = Result<T, String>;
-
-/// Stored raw output cap, matching `MAX_RAW_CHARS` in the reference.
-const MAX_RAW_CHARS: usize = 2000;
-
-/// UTC ISO-8601 with second precision and a `+00:00` suffix.
-pub fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
-}
-
-/// A 32-character lowercase hex run id, unique within and across processes.
-pub fn new_run_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-    // shortcut: time+counter, not uuid4; switch to a uuid crate if ids must be
-    // unguessable rather than merely unique.
-    format!("{:016x}{:016x}", nanos, count)
-}
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS runs (
@@ -165,42 +143,6 @@ impl Db {
             .execute(
                 "INSERT INTO run_events (run_id, seq, ts, event, data_json) VALUES (?, ?, ?, ?, ?)",
                 rusqlite::params![run_id, seq, ts, event, payload],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    }
-
-    /// One audit row per agent call, written on success and failure.
-    pub fn save_agent_call(&self, call: &NewAgentCall<'_>) -> DbResult<()> {
-        let error_message = call
-            .error_message
-            .filter(|message| !message.is_empty())
-            .map(redact);
-        let connection = self.connect()?;
-        connection
-            .execute(
-                concat!(
-                    "INSERT INTO agent_calls",
-                    " (run_id, step, agent, started_at, duration_ms, attempts, tool_turns, status,",
-                    "  error_type, error_message, input_chars, output_chars, raw_output, model)",
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                ),
-                rusqlite::params![
-                    call.run_id,
-                    call.step,
-                    call.agent,
-                    call.started_at,
-                    call.duration_ms,
-                    call.attempts,
-                    call.tool_turns,
-                    call.status,
-                    call.error_type,
-                    error_message,
-                    call.input_chars,
-                    call.output_chars,
-                    truncate(&redact(call.raw_output), MAX_RAW_CHARS),
-                    redact(call.model),
-                ],
             )
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -464,24 +406,6 @@ pub struct RunDetail {
     pub agent_calls: Vec<AgentCallRow>,
     pub tool_calls: Vec<ToolCallRow>,
     pub pending_actions: Vec<PendingActionRow>,
-}
-
-/// Values for one `agent_calls` insert, mirroring `save_agent_call` in the reference.
-pub struct NewAgentCall<'a> {
-    pub run_id: &'a str,
-    pub step: i64,
-    pub agent: &'a str,
-    pub started_at: &'a str,
-    pub duration_ms: i64,
-    pub attempts: i64,
-    pub tool_turns: i64,
-    pub status: &'a str,
-    pub error_type: Option<&'a str>,
-    pub error_message: Option<&'a str>,
-    pub input_chars: i64,
-    pub output_chars: i64,
-    pub raw_output: &'a str,
-    pub model: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize)]

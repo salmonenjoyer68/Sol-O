@@ -63,11 +63,6 @@ pub fn model_for(settings: &Settings, agent: &str) -> Option<String> {
     settings.agent_models.get(agent).cloned()
 }
 
-/// Model id used for an agent: override, else `MODEL`, else empty.
-pub fn resolved_model(settings: &Settings, agent: &str) -> String {
-    model_for(settings, agent).unwrap_or_else(|| env_value("MODEL"))
-}
-
 fn env_value(name: &str) -> String {
     std::env::var(name).unwrap_or_default().trim().to_string()
 }

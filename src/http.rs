@@ -1,6 +1,6 @@
 //! HTTP surface: the single-file UI, run history and the live SSE stream.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -19,8 +19,7 @@ use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use crate::agents::{self, RunError};
 use crate::config::{Settings, ROOT};
 use crate::events::{sse_stream, EventBus};
-use crate::llm;
-use crate::persistence::{self, Db, NewAgentCall, RunDetail, RunRow, SavedEvent};
+use crate::persistence::{Db, RunDetail, RunRow, SavedEvent};
 use crate::reliability::redact;
 use crate::schemas::{AgentOutput, RunRequest};
 
@@ -97,7 +96,7 @@ async fn index(State(state): State<AppState>) -> Result<Response, ApiError> {
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response())
 }
 
-/// Run one file-backed agent, audit the call, and return its validated JSON.
+/// Run one file-backed agent and return its validated JSON.
 async fn run(
     State(state): State<AppState>,
     payload: Result<Json<RunRequest>, JsonRejection>,
@@ -116,8 +115,8 @@ async fn run(
         }
     }
     let settings = state.settings.clone();
-    let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || execute_run(&settings, &db, request)).await {
+    let agents_dir = PathBuf::from(ROOT).join("agents");
+    match tokio::task::spawn_blocking(move || execute_run(&settings, &agents_dir, request)).await {
         Ok(result) => result.map(Json),
         Err(error) => Err(database_error(&format!("run task failed: {error}"))),
     }
@@ -130,95 +129,36 @@ fn unprocessable(rejection: JsonRejection) -> ApiError {
     )
 }
 
-fn execute_run(settings: &Settings, db: &Db, request: RunRequest) -> Result<AgentOutput, ApiError> {
-    let run_id = persistence::new_run_id();
-    let started_at = persistence::now_iso();
-    let started = std::time::Instant::now();
-    let input_chars = request.task.chars().count() as i64;
-    let model = llm::resolved_model(settings, &request.agent);
-    let outcome = agents::run_agent(settings, &request.agent, &request.task);
-
-    // Every request gets one audit row, including a failed prompt lookup.
-    let (result, status, error_type, error_message, attempts, raw_output) = match outcome {
-        Ok(outcome) => (
-            Ok(outcome.output),
-            "ok",
-            None,
-            None,
-            outcome.attempts as i64,
-            outcome.raw,
-        ),
-        Err(RunError::NotFound(agent)) => {
-            let detail = format!("unknown agent: {agent}");
-            (
-                Err(ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    json!({"error": "agent_not_found", "agent": agent}),
-                )),
-                "failed",
-                Some("agent_not_found"),
-                Some(detail),
-                0,
-                String::new(),
-            )
-        }
-        Err(RunError::Unreadable(detail)) => (
-            Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({"error": "agent_unreadable", "detail": detail}),
-            )),
-            "failed",
-            Some("agent_unreadable"),
-            Some(detail),
-            0,
-            String::new(),
-        ),
-        Err(RunError::Run(error)) => {
-            let api_error = match error.failure_type {
-                agents::FailureType::Timeout => ApiError::new(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    json!({"error": "llm_timeout", "detail": error.detail}),
-                ),
-                agents::FailureType::LlmError => ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    json!({"error": "llm_error", "detail": error.detail}),
-                ),
-                _ => ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    json!({"error": "invalid_agent_output", "raw": error.raw}),
-                ),
-            };
-            (
-                Err(api_error),
-                "failed",
-                Some(error.failure_type.as_str()),
-                Some(error.detail),
-                error.attempts as i64,
-                error.raw,
-            )
-        }
-    };
-
-    let call = NewAgentCall {
-        run_id: &run_id,
-        step: 1,
-        agent: &request.agent,
-        started_at: &started_at,
-        duration_ms: started.elapsed().as_millis() as i64,
-        attempts,
-        tool_turns: 0,
-        status,
-        error_type,
-        error_message: error_message.as_deref(),
-        input_chars,
-        output_chars: raw_output.chars().count() as i64,
-        raw_output: &raw_output,
-        model: &model,
-    };
-    if let Err(error) = db.save_agent_call(&call) {
-        tracing::warn!(error = %error, "could not write agent_calls row");
+fn execute_run(
+    settings: &Settings,
+    agents_dir: &Path,
+    request: RunRequest,
+) -> Result<AgentOutput, ApiError> {
+    match agents::run_agent(settings, agents_dir, &request.agent, &request.task) {
+        Ok(outcome) => Ok(outcome.output),
+        Err(RunError::NotFound(agent)) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            json!({"error": "agent_not_found", "agent": agent}),
+        )),
+        Err(RunError::Unreadable(detail)) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": "agent_unreadable", "detail": detail}),
+        )),
+        Err(RunError::Run(error)) => Err(match error.failure_type {
+            agents::FailureType::Timeout => ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                json!({"error": "llm_timeout", "detail": error.detail}),
+            ),
+            agents::FailureType::LlmError => ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": "llm_error", "detail": error.detail}),
+            ),
+            _ => ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": "invalid_agent_output", "raw": error.raw}),
+            ),
+        }),
     }
-    result
 }
 
 #[derive(Deserialize)]
@@ -344,7 +284,10 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::is_localhost_origin;
+    use super::{execute_run, is_localhost_origin};
+    use crate::config::Settings;
+    use crate::schemas::RunRequest;
+    use axum::http::StatusCode;
 
     #[test]
     fn cors_only_admits_localhost_origins() {
@@ -367,5 +310,24 @@ mod tests {
         ] {
             assert!(!is_localhost_origin(origin), "{origin} should be refused");
         }
+    }
+
+    #[test]
+    fn a_prompt_that_cannot_be_read_maps_to_agent_unreadable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // A directory where `broken.md` is expected: it exists but cannot be read.
+        std::fs::create_dir(dir.path().join("broken.md")).unwrap();
+        let request = RunRequest {
+            agent: "broken".to_string(),
+            task: "do it".to_string(),
+        };
+        let error = execute_run(&Settings::default(), dir.path(), request).unwrap_err();
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.body["error"], "agent_unreadable");
+        assert!(
+            error.body["detail"].as_str().unwrap().contains("broken.md"),
+            "detail {}",
+            error.body["detail"]
+        );
     }
 }

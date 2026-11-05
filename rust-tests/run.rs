@@ -1,5 +1,5 @@
 //! Black-box tests for `POST /run`: prompt loading, provider ladder/retries,
-//! output validation and the agent-call audit row.
+//! output validation and the response contract.
 
 mod support;
 
@@ -9,7 +9,6 @@ use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use support::fake_provider::{FakeProvider, Reply};
 use tempfile::TempDir;
@@ -117,43 +116,18 @@ fn start(database: &Path, provider: &FakeProvider, extra: &[(&str, &str)]) -> Se
     Server::start(database, &envs)
 }
 
-/// Stored `agent_calls` rows, oldest first.
-fn agent_calls(database: &Path) -> Vec<Value> {
-    let connection = Connection::open(database).expect("open database");
-    let mut statement = connection
-        .prepare(
-            "SELECT run_id, step, agent, started_at, duration_ms, attempts, tool_turns, status,
-                    error_type, error_message, input_chars, output_chars, raw_output, model
-             FROM agent_calls ORDER BY id",
-        )
-        .expect("prepare agent_calls");
-    let rows = statement
-        .query_map([], |row| {
-            Ok(json!({
-                "run_id": row.get::<_, String>(0)?,
-                "step": row.get::<_, i64>(1)?,
-                "agent": row.get::<_, String>(2)?,
-                "started_at": row.get::<_, String>(3)?,
-                "duration_ms": row.get::<_, i64>(4)?,
-                "attempts": row.get::<_, i64>(5)?,
-                "tool_turns": row.get::<_, i64>(6)?,
-                "status": row.get::<_, String>(7)?,
-                "error_type": row.get::<_, Option<String>>(8)?,
-                "error_message": row.get::<_, Option<String>>(9)?,
-                "input_chars": row.get::<_, i64>(10)?,
-                "output_chars": row.get::<_, i64>(11)?,
-                "raw_output": row.get::<_, String>(12)?,
-                "model": row.get::<_, String>(13)?,
-            }))
-        })
-        .expect("query agent_calls")
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .expect("read agent_calls");
-    rows
+/// `/run` performs no audit writes; the table stays empty.
+fn assert_no_audit_rows(database: &Path) {
+    let db = sol_o::persistence::Db::new(database);
+    let connection = db.connect().expect("open database");
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM agent_calls", [], |row| row.get(0))
+        .expect("count agent_calls");
+    assert_eq!(count, 0, "/run writes no agent_calls rows");
 }
 
 #[test]
-fn a_valid_request_returns_the_validated_object_and_audits_the_call() {
+fn a_valid_request_returns_the_validated_object() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
     let provider = FakeProvider::start(vec![Reply::content(valid_output())]);
@@ -187,27 +161,7 @@ fn a_valid_request_returns_the_validated_object_and_audits_the_call() {
         "system prompt is the file plus the reference contract"
     );
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls.len(), 1);
-    let call = &calls[0];
-    assert_eq!(call["agent"], "researcher");
-    assert_eq!(call["step"], 1);
-    assert_eq!(call["status"], "ok");
-    assert_eq!(call["attempts"], 1);
-    assert_eq!(call["tool_turns"], 0);
-    assert_eq!(call["model"], "test-model");
-    assert_eq!(call["error_type"], Value::Null);
-    assert_eq!(call["error_message"], Value::Null);
-    assert_eq!(
-        call["input_chars"],
-        "Explain online ordering for cafes.".len()
-    );
-    let raw = call["raw_output"].as_str().unwrap();
-    assert_eq!(call["output_chars"], raw.chars().count() as i64);
-    let audited: Value = serde_json::from_str(raw).unwrap();
-    assert_eq!(audited, body);
-    assert_eq!(call["run_id"].as_str().unwrap().len(), 32);
-    assert!(call["started_at"].as_str().unwrap().ends_with("+00:00"));
+    assert_no_audit_rows(&database);
 }
 
 #[test]
@@ -228,17 +182,11 @@ fn unknown_and_unsafe_agent_names_are_404_and_never_reach_the_provider() {
     assert_eq!(empty.status(), 422, "empty agent fails request validation");
     assert!(provider.requests().is_empty());
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls.len(), 2);
-    for call in &calls {
-        assert_eq!(call["status"], "failed");
-        assert_eq!(call["error_type"], "agent_not_found");
-        assert_eq!(call["attempts"], 0);
-    }
+    assert_no_audit_rows(&database);
 }
 
 #[test]
-fn a_provider_outage_maps_to_the_documented_error_and_audit_row() {
+fn a_provider_outage_maps_to_the_documented_error() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
     let provider = FakeProvider::start(vec![Reply::status_message(500, "provider is down")]);
@@ -255,12 +203,7 @@ fn a_provider_outage_maps_to_the_documented_error_and_audit_row() {
     );
     assert_eq!(provider.requests().len(), 1);
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["status"], "failed");
-    assert_eq!(calls[0]["error_type"], "llm_error");
-    assert_eq!(calls[0]["attempts"], 1);
-    assert_eq!(calls[0]["agent"], "researcher");
+    assert_no_audit_rows(&database);
 }
 
 #[test]
@@ -289,10 +232,7 @@ fn a_scripted_timeout_maps_to_the_timeout_status() {
         body["detail"]
     );
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["status"], "failed");
-    assert_eq!(calls[0]["error_type"], "timeout");
+    assert_no_audit_rows(&database);
 }
 
 #[test]
@@ -315,12 +255,7 @@ fn transient_failures_are_retried_with_backoff_then_succeed() {
     );
     assert_eq!(provider.requests().len(), 2);
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls[0]["status"], "ok");
-    assert_eq!(
-        calls[0]["attempts"], 1,
-        "validation attempts, not HTTP calls"
-    );
+    assert_no_audit_rows(&database);
 }
 
 #[test]
@@ -381,9 +316,7 @@ fn a_malformed_response_is_retried_with_the_error_appended() {
     );
     assert_eq!(sent[1].response_format_type(), Some("json_schema"));
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls[0]["attempts"], 2);
-    assert_eq!(calls[0]["status"], "ok");
+    assert_no_audit_rows(&database);
 }
 
 #[test]
@@ -404,16 +337,11 @@ fn permanently_malformed_output_returns_the_invalid_output_body_with_raw_text() 
     assert_eq!(body["raw"], "never json");
     assert_eq!(provider.requests().len(), 3, "three validation attempts");
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls[0]["status"], "failed");
-    assert_eq!(calls[0]["error_type"], "invalid_json");
-    assert_eq!(calls[0]["attempts"], 3);
-    assert_eq!(calls[0]["raw_output"], "never json");
-    assert_eq!(calls[0]["output_chars"], "never json".len());
+    assert_no_audit_rows(&database);
 }
 
 #[test]
-fn schema_mismatches_are_rejected_and_audited_as_schema_mismatch() {
+fn schema_mismatches_are_rejected_as_invalid_agent_output() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
     let mut output: Value = serde_json::from_str(&valid_output()).unwrap();
@@ -427,7 +355,5 @@ fn schema_mismatches_are_rejected_and_audited_as_schema_mismatch() {
     assert_eq!(body["error"], "invalid_agent_output");
     assert_eq!(body["raw"], output.to_string());
 
-    let calls = agent_calls(&database);
-    assert_eq!(calls[0]["error_type"], "schema_mismatch");
-    assert_eq!(calls[0]["attempts"], 1);
+    assert_no_audit_rows(&database);
 }
