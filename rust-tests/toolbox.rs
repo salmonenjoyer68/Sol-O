@@ -303,7 +303,7 @@ fn a_tool_outside_the_allowlist_is_a_failed_call_and_never_raises() {
     let database = dir.path().join("sol-o.db");
     let provider = FakeProvider::start(vec![
         Reply::content(researcher_output()),
-        Reply::content(envelope("kb_search", json!({"query": "weekend"}))),
+        Reply::content(envelope("fetch_url", json!({"url": "https://example.com"}))),
         Reply::content(writer_output()),
         Reply::content(checker_output()),
     ]);
@@ -317,11 +317,11 @@ fn a_tool_outside_the_allowlist_is_a_failed_call_and_never_raises() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| row["tool"] == "kb_search")
+        .filter(|row| row["tool"] == "fetch_url")
         .collect();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["status"], "failed");
-    assert_eq!(tools[0]["error_message"], "tool not allowed: kb_search");
+    assert_eq!(tools[0]["error_message"], "tool not allowed: fetch_url");
 
     let doc = events(&server, &run_id);
     let done = events_named(&doc, "tool_done");
@@ -330,7 +330,7 @@ fn a_tool_outside_the_allowlist_is_a_failed_call_and_never_raises() {
 
     let requests = provider.requests();
     let writer_turn = *requests[2].contents().last().unwrap();
-    assert!(writer_turn.contains("tool not allowed: kb_search"));
+    assert!(writer_turn.contains("tool not allowed: fetch_url"));
     assert!(writer_turn.contains("\"ok\": false"));
 }
 

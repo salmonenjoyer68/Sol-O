@@ -10,7 +10,10 @@ use serde_json::{Map, Value};
 
 use crate::calc::calculate;
 use crate::config::Settings;
+use crate::fetch::fetch_url;
+use crate::kb::search_kb;
 use crate::persistence::{Db, NewToolCall};
+use crate::recall::recall;
 use crate::reliability::{redact, Deadline};
 use crate::schemas::ToolRequest;
 
@@ -39,6 +42,8 @@ pub struct ToolContext {
     pub agent: String,
     pub step: i64,
     pub deadline: Deadline,
+    pub settings: Settings,
+    pub db: Db,
 }
 
 pub type ToolHandler = fn(&Map<String, Value>, &ToolContext) -> Result<Value, String>;
@@ -52,6 +57,33 @@ pub struct Tool {
     pub handler: ToolHandler,
 }
 
+/// `int(args.get("limit", 5))`: a bad limit reaches the handler and fails there.
+fn limit_arg(args: &Map<String, Value>) -> Result<i64, String> {
+    match args.get("limit") {
+        None => Ok(5),
+        Some(Value::Bool(flag)) => Ok(i64::from(*flag)),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value.trunc() as i64))
+            .ok_or_else(|| format!("invalid limit: {number}")),
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| format!("invalid limit: {text}")),
+        Some(other) => Err(format!("invalid limit: {other}")),
+    }
+}
+
+fn search_handler(args: &Map<String, Value>, _context: &ToolContext) -> Result<Value, String> {
+    let query = args.get("query").map(stringify_value).unwrap_or_default();
+    Ok(Value::Array(search_kb(&query, limit_arg(args)?)?))
+}
+
+fn fetch_handler(args: &Map<String, Value>, context: &ToolContext) -> Result<Value, String> {
+    let url = args.get("url").map(stringify_value).unwrap_or_default();
+    fetch_url(&url, &context.settings)
+}
+
 fn calc_handler(args: &Map<String, Value>, _context: &ToolContext) -> Result<Value, String> {
     let expression = args
         .get("expression")
@@ -60,14 +92,48 @@ fn calc_handler(args: &Map<String, Value>, _context: &ToolContext) -> Result<Val
     calculate(&expression)
 }
 
-/// The registry the next ticket extends: add an entry here, then allow it.
-pub static TOOLS: &[Tool] = &[Tool {
-    name: "calc",
-    signature: "{\"expression\": str}",
-    description: "Evaluate arithmetic and date arithmetic, e.g. \"3 * 19.99\" or \"days_between('2026-11-01','2026-12-01')\".",
-    required: &["expression"],
-    handler: calc_handler,
-}];
+fn recall_handler(args: &Map<String, Value>, context: &ToolContext) -> Result<Value, String> {
+    let query = args.get("query").map(stringify_value).unwrap_or_default();
+    Ok(Value::Array(recall(
+        &context.db,
+        &query,
+        &context.source,
+        &context.run_id,
+        limit_arg(args)?,
+    )?))
+}
+
+/// The registry: add an entry here, then allow it below.
+pub static TOOLS: &[Tool] = &[
+    Tool {
+        name: "kb_search",
+        signature: "{\"query\": str, \"limit\": int=5}",
+        description: "Search the company knowledge base; returns matching chunks with their file path (trimmed to the result budget; `limit` is clamped to the documented range).",
+        required: &["query"],
+        handler: search_handler,
+    },
+    Tool {
+        name: "fetch_url",
+        signature: "{\"url\": str}",
+        description: "Download one http(s) page and return its visible text (trimmed to the result budget and marked `truncated` when partial).",
+        required: &["url"],
+        handler: fetch_handler,
+    },
+    Tool {
+        name: "calc",
+        signature: "{\"expression\": str}",
+        description: "Evaluate arithmetic and date arithmetic, e.g. \"3 * 19.99\" or \"days_between('2026-11-01','2026-12-01')\".",
+        required: &["expression"],
+        handler: calc_handler,
+    },
+    Tool {
+        name: "recall",
+        signature: "{\"query\": str, \"limit\": int=5}",
+        description: "Search earlier runs from this same conversation (trimmed to the result budget).",
+        required: &["query"],
+        handler: recall_handler,
+    },
+];
 
 /// The exact per-agent allowlist; only names present in [`TOOLS`] are offered.
 pub fn agent_tool_names(agent: &str) -> &'static [&'static str] {
@@ -432,6 +498,8 @@ impl<'a> Toolset<'a> {
             agent: self.agent.clone(),
             step: self.step,
             deadline: self.deadline.clone(),
+            settings: self.settings.clone(),
+            db: self.db.clone(),
         };
         match (tool.handler)(args, &context) {
             Ok(result) => serde_json::json!({"tool": name, "ok": true, "result": result}),
@@ -560,11 +628,13 @@ mod tests {
         let emit = |_: &str, _: Value| {};
         let writer = Toolset::new(&settings, &db, &emit, "writer", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
         assert!(writer.contract().contains("- calc {\"expression\": str} — "));
-        assert!(!writer.contract().contains("kb_search {"));
+        assert!(writer.contract().contains("- kb_search {"));
+        assert!(!writer.contract().contains("- fetch_url {"));
         assert!(writer.contract().contains("at most 3 tool turns"));
         assert!(writer.contract().contains("1..10"));
         let researcher = Toolset::new(&settings, &db, &emit, "researcher", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
-        assert!(researcher.tools.is_empty());
+        assert_eq!(researcher.tools.len(), 3);
+        assert!(!researcher.contract().contains("- calc {"));
         assert!(has_toolset("logger") == false);
     }
 }

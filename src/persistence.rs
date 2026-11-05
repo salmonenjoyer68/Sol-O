@@ -480,6 +480,56 @@ impl Db {
         Ok(rows)
     }
 
+    /// Finished runs from the same conversation that mention any term, newest first.
+    pub fn recall_runs(
+        &self,
+        source: &str,
+        exclude_run_id: &str,
+        terms: &[String],
+        limit: i64,
+    ) -> DbResult<Vec<RecallRunRow>> {
+        let cleaned: Vec<String> = terms
+            .iter()
+            .map(|term| term.to_lowercase().replace(['%', '_'], "").trim().to_string())
+            .filter(|term| term.chars().count() >= 3)
+            .collect();
+        if source.is_empty() || cleaned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connect()?;
+        let clause = vec!["(task LIKE ? OR final_draft LIKE ?)"; cleaned.len()].join(" OR ");
+        let mut values = vec![
+            rusqlite::types::Value::Text(source.to_string()),
+            rusqlite::types::Value::Text(exclude_run_id.to_string()),
+        ];
+        for term in &cleaned {
+            let pattern = rusqlite::types::Value::Text(format!("%{term}%"));
+            values.push(pattern.clone());
+            values.push(pattern);
+        }
+        values.push(rusqlite::types::Value::Integer(limit.max(1)));
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT id, created_at, task, final_draft FROM runs
+                 WHERE source = ? AND id != ? AND status IN ('complete','partial') AND ({clause})
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?"
+            ))
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                Ok(RecallRunRow {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    task: row.get(2)?,
+                    final_draft: row.get(3)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())
+    }
+
     /// One run by id, or `None`.
     pub fn get_run(&self, run_id: &str) -> DbResult<Option<RunRow>> {
         let connection = self.connect()?;
@@ -703,6 +753,15 @@ pub struct RunRow {
     pub duration_seconds: f64,
     pub warning: Option<String>,
     pub source: String,
+}
+
+/// One recall hit: a finished run from the same conversation.
+#[derive(Debug, Clone)]
+pub struct RecallRunRow {
+    pub id: String,
+    pub created_at: String,
+    pub task: String,
+    pub final_draft: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
