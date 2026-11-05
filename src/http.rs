@@ -245,7 +245,7 @@ fn spawn_run(state: AppState, task: String, use_llm_planner: bool, run_id: Strin
             })
         };
         let outcome = match job.await {
-            Ok(Ok(())) => None,
+            Ok(Ok(_)) => None,
             Ok(Err(message)) => Some(message),
             Err(error) => Some(error.to_string()),
         };
