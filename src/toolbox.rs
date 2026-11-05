@@ -558,12 +558,12 @@ mod tests {
         let settings = Settings::default();
         let db = Db::new(":memory:");
         let emit = |_: &str, _: Value| {};
-        let writer = Toolset::new(&settings, &db, &emit, "writer", 1, "run", "src", Deadline::new(60.0));
+        let writer = Toolset::new(&settings, &db, &emit, "writer", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
         assert!(writer.contract().contains("- calc {\"expression\": str} — "));
         assert!(!writer.contract().contains("kb_search {"));
         assert!(writer.contract().contains("at most 3 tool turns"));
         assert!(writer.contract().contains("1..10"));
-        let researcher = Toolset::new(&settings, &db, &emit, "researcher", 1, "run", "src", Deadline::new(60.0));
+        let researcher = Toolset::new(&settings, &db, &emit, "researcher", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
         assert!(researcher.tools.is_empty());
         assert!(has_toolset("logger") == false);
     }

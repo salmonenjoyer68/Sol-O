@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -31,9 +31,43 @@ pub const NOTIFIER_TASK: &str =
 
 const SUMMARY_LIMIT: usize = 140;
 const SEARCH_QUERY_CHARS: usize = 400;
+/// `MAX_RAW_CHARS` in `app/reliability.py`; structured failure text is capped here.
+const MAX_FAILURE_CHARS: usize = 2000;
+const REVISION_CHECK_TASK: &str = "Re-review the revised writer draft against the researcher findings and confirm whether every previously reported issue is fixed.";
 const NO_RESULTS_NOTE: &str = "No search results are available. Do not invent sources: mark every claim 'unverified' and list what could not be checked in gaps.";
 const EMPTY_RESULTS_NOTE: &str =
     "The search returned no results. Mark every claim 'unverified' and list gaps.";
+
+/// A stopped run's structured failure, mirroring `schemas.Failure`.
+#[derive(Clone, Debug)]
+struct Failure {
+    agent: String,
+    error_type: FailureType,
+    message: String,
+    raw_output: String,
+    attempts: usize,
+    tool_turns: i64,
+}
+
+impl Failure {
+    fn new(
+        agent: &str,
+        error_type: FailureType,
+        message: &str,
+        raw: &str,
+        attempts: usize,
+        tool_turns: i64,
+    ) -> Self {
+        Self {
+            agent: agent.to_string(),
+            error_type,
+            message: truncate(&redact(message), MAX_FAILURE_CHARS),
+            raw_output: truncate(&redact(raw), MAX_FAILURE_CHARS),
+            attempts,
+            tool_turns,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct PlanStep {
@@ -120,7 +154,7 @@ impl Orchestrator {
         // #30 adds the LLM planner; this ticket always plans hardcoded.
         let _ = use_llm_planner;
         let started = Instant::now();
-        let deadline = Deadline::new(self.settings.run_timeout_seconds);
+        let deadline = Deadline::new(started, self.settings.run_timeout_seconds);
         let handle = tokio::runtime::Handle::current();
         let emitter = Emitter {
             bus: &self.bus,
@@ -128,9 +162,23 @@ impl Orchestrator {
             run_id,
         };
 
+        // The reference truncates before writing the row, so both the stored
+        // task and every prompt see the capped text.
+        let mut task = task.to_string();
+        let mut warning: Option<String> = None;
+        let max_input_chars = self.settings.max_input_chars.max(0) as usize;
+        let task_chars = task.chars().count();
+        if task_chars > max_input_chars {
+            warning = Some(format!(
+                "task truncated from {task_chars} to {max_input_chars} characters"
+            ));
+            task = task.chars().take(max_input_chars).collect();
+            tracing::warn!(%task_chars, max_input_chars, "task truncated");
+        }
+
         // The HTTP layer already inserted the row; the Sun retries it like the
         // reference, and a failure here never fails the run.
-        if let Err(error) = self.db.start_run(run_id, task, source) {
+        if let Err(error) = self.db.start_run(run_id, &task, source) {
             tracing::error!(run_id, %error, "could not create run row");
             emitter.emit(
                 "logger_failed",
@@ -138,13 +186,13 @@ impl Orchestrator {
             );
         }
 
-        emitter.emit("run_started", json!({"task": redact(task)}));
+        emitter.emit("run_started", json!({"task": redact(&task)}));
 
-        let plan: Vec<PlanStep> = DEFAULT_PLAN
+        let mut plan: Vec<PlanStep> = DEFAULT_PLAN
             .iter()
             .map(|agent| PlanStep {
                 agent: (*agent).to_string(),
-                task: task.to_string(),
+                task: task.clone(),
             })
             .collect();
         emitter.emit(
@@ -158,11 +206,60 @@ impl Orchestrator {
 
         let mut outputs: Vec<StepResult> = Vec::new();
         let mut status = "complete";
+        let mut stopped_at: Option<String> = None;
+        let mut reason: Option<String> = None;
+        let mut failed_at: Option<String> = None;
+        let mut failure: Option<Failure> = None;
         let mut search_block: Option<Value> = None;
+        let mut revision_used = false;
+        let mut index = 0;
 
-        for step in &plan {
+        while reason.is_none() && index < plan.len() {
+            let step = plan[index].clone();
             let number = outputs.len() as i64 + 1;
             emitter.emit("agent_called", json!({"step": number, "agent": step.agent}));
+
+            // The whole-run budget is checked before the call, never mid-call:
+            // a step that never starts records no audit row.
+            if deadline.expired() {
+                let message = format!(
+                    "run exceeded {:.1}s before agent={}",
+                    deadline.seconds, step.agent
+                );
+                status = "failed";
+                failed_at = Some(step.agent.clone());
+                stopped_at = Some(step.agent.clone());
+                reason = Some("run_timeout".to_string());
+                failure = Some(Failure::new(
+                    &step.agent,
+                    FailureType::Timeout,
+                    &format!("run_timeout: {message}"),
+                    "",
+                    0,
+                    0,
+                ));
+                emitter.emit(
+                    "agent_failed",
+                    json!({
+                        "step": number,
+                        "agent": step.agent,
+                        "error": "timeout",
+                        "error_type": "timeout",
+                        "message": message,
+                        "attempts": 0,
+                    }),
+                );
+                emitter.emit(
+                    "stopped",
+                    json!({
+                        "step": number,
+                        "agent": step.agent,
+                        "status": status,
+                        "reason": reason,
+                    }),
+                );
+                break;
+            }
 
             let mut extra = String::new();
             if step.agent == "researcher" && search_block.is_none() {
@@ -170,7 +267,32 @@ impl Orchestrator {
                     "agent_working",
                     json!({"step": number, "agent": step.agent, "attempt": 1, "call": 1}),
                 );
-                let block = self.search_context(task, run_id, &emitter);
+                if deadline.expired() {
+                    let message = "run exceeded its time budget before search";
+                    status = "failed";
+                    failed_at = Some(step.agent.clone());
+                    stopped_at = Some(step.agent.clone());
+                    reason = Some("run_timeout".to_string());
+                    failure = Some(Failure::new(
+                        &step.agent,
+                        FailureType::Timeout,
+                        &format!("run_timeout: {message}"),
+                        "",
+                        0,
+                        0,
+                    ));
+                    emitter.emit(
+                        "stopped",
+                        json!({
+                            "step": number,
+                            "agent": step.agent,
+                            "status": status,
+                            "reason": reason,
+                        }),
+                    );
+                    break;
+                }
+                let block = self.search_context(&task, run_id, &emitter);
                 extra = format!(
                     "Web search results (JSON):\n{}",
                     serde_json::to_string_pretty(&block).expect("search context serializes")
@@ -178,7 +300,7 @@ impl Orchestrator {
                 search_block = Some(block);
             }
 
-            let message = agent_message(task, &step.agent, &step.task, &outputs, &extra);
+            let message = agent_message(&task, &step.agent, &step.task, &outputs, &extra);
             let Some(schema) = step_schema(&step.agent) else {
                 return Err(format!("unknown agent: {}", step.agent));
             };
@@ -211,9 +333,17 @@ impl Orchestrator {
                     number,
                     run_id,
                     source,
-                    deadline.clone(),
+                    deadline,
                 )
             });
+            // Each call gets the smaller of the configured limit and what is
+            // left of the run budget.
+            let call_timeout = Duration::from_secs_f64(
+                self.settings
+                    .llm_timeout_seconds
+                    .min(deadline.remaining())
+                    .max(0.001),
+            );
             let validated = agents::run_validated(
                 &self.settings,
                 &self.agents_dir,
@@ -223,27 +353,48 @@ impl Orchestrator {
                 &schema,
                 &parse,
                 toolset.as_ref(),
+                Some(call_timeout),
                 &mut on_attempt,
             );
 
             let validated = match validated {
                 Ok(validated) => validated,
                 Err(RunError::Run(error)) => {
-                    let error_type = error.failure_type.as_str();
+                    // A validation error that lands after the run budget ran
+                    // out is reported as a timeout, like the reference.
+                    let timed_out = deadline.expired();
+                    let error_type = if timed_out {
+                        FailureType::Timeout
+                    } else {
+                        error.failure_type
+                    };
+                    let reason_text = if timed_out {
+                        "run_timeout".to_string()
+                    } else {
+                        format!("{}: {}", error.failure_type.as_str(), error.detail)
+                    };
+                    let failed = Failure::new(
+                        &step.agent,
+                        error_type,
+                        &error.detail,
+                        &error.raw,
+                        error.attempts,
+                        error.tool_turns as i64,
+                    );
                     self.record_agent_call(NewAgentCall {
                         run_id: run_id.to_string(),
                         step: number,
-                        agent: step.agent.clone(),
+                        agent: failed.agent.clone(),
                         started_at,
                         duration_ms: step_started.elapsed().as_millis() as i64,
-                        attempts: error.attempts as i64,
-                        tool_turns: error.tool_turns as i64,
+                        attempts: failed.attempts as i64,
+                        tool_turns: failed.tool_turns,
                         status: "failed".to_string(),
-                        error_type: Some(error_type.to_string()),
-                        error_message: Some(error.detail.clone()),
+                        error_type: Some(failed.error_type.as_str().to_string()),
+                        error_message: Some(failed.message.clone()),
                         input_chars: message.chars().count() as i64,
                         output_chars: error.raw.chars().count() as i64,
-                        raw_output: error.raw.clone(),
+                        raw_output: failed.raw_output.clone(),
                         model: resolved_model(&self.settings, &step.agent),
                     });
                     emitter.emit(
@@ -251,11 +402,11 @@ impl Orchestrator {
                         json!({
                             "step": number,
                             "agent": step.agent,
-                            "error": error_type,
-                            "error_type": error_type,
+                            "error": failed.error_type.as_str(),
+                            "error_type": failed.error_type.as_str(),
                             "message": error.detail,
                             "attempts": error.attempts,
-                            "tool_turns": error.tool_turns,
+                            "tool_turns": failed.tool_turns,
                         }),
                     );
                     emitter.emit(
@@ -264,10 +415,14 @@ impl Orchestrator {
                             "step": number,
                             "agent": step.agent,
                             "status": "failed",
-                            "reason": format!("{error_type}: {}", error.detail),
+                            "reason": reason_text,
                         }),
                     );
                     status = "failed";
+                    failed_at = Some(step.agent.clone());
+                    stopped_at = Some(step.agent.clone());
+                    reason = Some(reason_text);
+                    failure = Some(failed);
                     break;
                 }
                 Err(other) => return Err(format!("{other:?}")),
@@ -321,6 +476,78 @@ impl Orchestrator {
                     "summary": summary,
                 }),
             );
+
+            let output = &outputs.last().expect("agent step just pushed").output;
+            if output.get("status").and_then(Value::as_str) == Some("needs_clarification") {
+                let clarification = output
+                    .get("clarification_needed")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("agent requested clarification")
+                    .to_string();
+                status = "needs_clarification";
+                stopped_at = Some(step.agent.clone());
+                reason = Some(clarification);
+                emitter.emit(
+                    "stopped",
+                    json!({
+                        "step": number,
+                        "agent": step.agent,
+                        "status": status,
+                        "reason": reason,
+                    }),
+                );
+                break;
+            }
+
+            if step.agent == "checker"
+                && output.get("verdict").and_then(Value::as_str) == Some("needs_changes")
+            {
+                let issues: Vec<Value> = output
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if revision_used {
+                    status = "partial";
+                    stopped_at = Some("checker".to_string());
+                    reason = Some(format!(
+                        "checker still rejected the revised draft with {} issue(s)",
+                        issues.len()
+                    ));
+                    emitter.emit(
+                        "stopped",
+                        json!({
+                            "step": number,
+                            "agent": step.agent,
+                            "status": status,
+                            "reason": reason,
+                        }),
+                    );
+                    break;
+                }
+                revision_used = true;
+                emitter.emit(
+                    "revision_requested",
+                    json!({"step": number, "issues": issues.len()}),
+                );
+                plan.insert(
+                    index + 1,
+                    PlanStep {
+                        agent: "writer".to_string(),
+                        task: revision_task(&issues),
+                    },
+                );
+                plan.insert(
+                    index + 2,
+                    PlanStep {
+                        agent: "checker".to_string(),
+                        task: REVISION_CHECK_TASK.to_string(),
+                    },
+                );
+            }
+
+            index += 1;
         }
 
         let final_draft = final_draft(&outputs);
@@ -336,7 +563,7 @@ impl Orchestrator {
             notify_mode = "skipped";
         } else if approval_required(&self.settings) {
             let payload = approval_payload(
-                task,
+                &task,
                 status,
                 &final_draft,
                 final_verdict.as_deref(),
@@ -378,8 +605,20 @@ impl Orchestrator {
                     // Never send without a stored approval.
                     tracing::error!(run_id, %error, "could not store pending action");
                     notify_mode = "error";
-                    notify_error = Some(redact(&error));
+                    let notify_error_text = redact(&error);
+                    notify_error = Some(notify_error_text.clone());
                     status = "failed";
+                    failed_at = Some("notifier".to_string());
+                    stopped_at = Some("notifier".to_string());
+                    reason = Some(format!("tool_error: {notify_error_text}"));
+                    failure = Some(Failure::new(
+                        "notifier",
+                        FailureType::ToolError,
+                        &format!("tool_error: {notify_error_text}"),
+                        "",
+                        0,
+                        0,
+                    ));
                     emitter.emit(
                         "notifier_failed",
                         json!({"agent": "notifier", "reason": notify_error}),
@@ -395,13 +634,13 @@ impl Orchestrator {
         let outputs_json = Value::Array(outputs.iter().map(StepResult::to_value).collect());
         let log_output = match self.db.save_run(
             run_id,
-            task,
+            &task,
             status,
             &final_draft,
             final_verdict.as_deref(),
             &outputs_json,
             started.elapsed().as_secs_f64(),
-            None,
+            warning.as_deref(),
         ) {
             Ok(()) => {
                 emitter.emit(
@@ -473,7 +712,7 @@ impl Orchestrator {
             }),
             _ => {
                 let text = notification_text(
-                    task,
+                    &task,
                     status,
                     &final_draft,
                     final_verdict.as_deref(),
@@ -484,35 +723,66 @@ impl Orchestrator {
                     "agent_working",
                     json!({"step": number, "agent": "notifier", "attempt": 1, "call": 1}),
                 );
-                match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds) {
-                    Ok(delivery) => {
-                        emitter.emit(
-                            "notifier_sent",
+                if deadline.expired() {
+                    // The budget covers delivery too: never start a send it cannot finish.
+                    let message = "run exceeded its time budget before sending";
+                    status = "failed";
+                    failed_at = Some("notifier".to_string());
+                    stopped_at = Some("notifier".to_string());
+                    reason = Some("run_timeout".to_string());
+                    failure = Some(Failure::new(
+                        "notifier",
+                        FailureType::Timeout,
+                        &format!("run_timeout: {message}"),
+                        "",
+                        0,
+                        0,
+                    ));
+                    if let Err(error) = self.db.set_run_status(run_id, status) {
+                        tracing::error!(run_id, %error, "could not mark run failed");
+                    }
+                    emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                    json!({"agent": "notifier", "status": "failed", "error": message})
+                } else {
+                    match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds) {
+                        Ok(delivery) => {
+                            emitter.emit(
+                                "notifier_sent",
+                                json!({
+                                    "step": number,
+                                    "dry_run": delivery.dry_run,
+                                    "delivered": delivery.delivered,
+                                    "parts": delivery.parts,
+                                }),
+                            );
                             json!({
-                                "step": number,
+                                "agent": "notifier",
+                                "status": "complete",
                                 "dry_run": delivery.dry_run,
                                 "delivered": delivery.delivered,
                                 "parts": delivery.parts,
-                            }),
-                        );
-                        json!({
-                            "agent": "notifier",
-                            "status": "complete",
-                            "dry_run": delivery.dry_run,
-                            "delivered": delivery.delivered,
-                            "parts": delivery.parts,
-                        })
-                    }
-                    Err(error) => {
-                        let reason = error.message().to_string();
-                        if status != "failed" {
+                            })
+                        }
+                        Err(error) => {
+                            let message = error.message().to_string();
                             status = "failed";
+                            failed_at = Some("notifier".to_string());
+                            stopped_at = Some("notifier".to_string());
+                            reason = Some(format!("tool_error: {message}"));
+                            failure = Some(Failure::new(
+                                "notifier",
+                                FailureType::ToolError,
+                                &format!("tool_error: {message}"),
+                                "",
+                                0,
+                                0,
+                            ));
                             if let Err(error) = self.db.set_run_status(run_id, status) {
                                 tracing::error!(run_id, %error, "could not mark run failed");
                             }
+                            emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                            json!({"agent": "notifier", "status": "failed", "error": message})
                         }
-                        emitter.emit("notifier_failed", json!({"step": number, "reason": reason}));
-                        json!({"agent": "notifier", "status": "failed", "error": reason})
                     }
                 }
             }
@@ -538,7 +808,28 @@ impl Orchestrator {
             }),
         );
 
-        if status != "failed" && status != "awaiting_approval" {
+        tracing::info!(
+            run_id,
+            status,
+            stopped_at = stopped_at.as_deref().unwrap_or(""),
+            steps = outputs.len(),
+            "orchestration finished"
+        );
+
+        if status == "failed" {
+            let error_type = failure
+                .as_ref()
+                .map(|failed| failed.error_type.as_str())
+                .unwrap_or("llm_error");
+            emitter.emit(
+                "run_failed",
+                json!({
+                    "failed_at": failed_at,
+                    "error_type": error_type,
+                    "message": reason.clone().unwrap_or_else(|| "run failed".to_string()),
+                }),
+            );
+        } else if status != "awaiting_approval" {
             let duration = round2(started.elapsed().as_secs_f64());
             emitter.emit(
                 "all_done",
@@ -753,6 +1044,14 @@ fn agent_message(
         message.push_str(extra);
     }
     message
+}
+
+/// The writer's revision instruction, embedding the checker's issues verbatim.
+fn revision_task(issues: &[Value]) -> String {
+    let payload = serde_json::to_string_pretty(issues).expect("checker issues serialize");
+    format!(
+        "Revise your draft so it resolves every issue the checker reported. Use only facts from the earlier outputs; do not add new claims. Return the complete revised draft.\nIssues:\n{payload}"
+    )
 }
 
 fn system_step(number: i64, agent: &str, output: Value, seconds: f64) -> StepResult {

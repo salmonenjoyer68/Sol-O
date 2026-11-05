@@ -4,6 +4,7 @@
 //! so the same strings are scrubbed from logs, stored rows and event payloads.
 
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use regex::{Captures, Regex};
 use serde_json::Value;
@@ -64,6 +65,27 @@ pub fn truncate(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
+/// Wall-clock budget for one orchestration run, like `app.reliability.Deadline`.
+#[derive(Clone, Copy, Debug)]
+pub struct Deadline {
+    started: Instant,
+    pub seconds: f64,
+}
+
+impl Deadline {
+    pub fn new(started: Instant, seconds: f64) -> Self {
+        Self { started, seconds }
+    }
+
+    pub fn remaining(&self) -> f64 {
+        (self.seconds - self.started.elapsed().as_secs_f64()).max(0.0)
+    }
+
+    pub fn expired(&self) -> bool {
+        self.remaining() <= 0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +98,17 @@ mod tests {
         assert_eq!(truncate("plain", 0), "");
         assert_eq!(truncate("", 5), "");
         assert_eq!(truncate("🪐🪐", 1), "🪐");
+    }
+
+    #[test]
+    fn deadlines_count_down_and_expire_at_zero() {
+        let future = Deadline::new(Instant::now(), 10.0);
+        assert!(future.remaining() > 9.0 && future.remaining() <= 10.0);
+        assert!(!future.expired());
+
+        let past = Deadline::new(Instant::now() - std::time::Duration::from_secs(1), 0.5);
+        assert_eq!(past.remaining(), 0.0);
+        assert!(past.expired());
     }
 
     #[test]
@@ -127,25 +160,5 @@ mod tests {
         assert_eq!(cleaned["count"], 2);
         assert_eq!(cleaned["flag"], true);
         assert!(cleaned["missing"].is_null());
-    }
-}
-
-/// Whole-run time budget; `expired` gates tool execution like the reference.
-#[derive(Clone, Debug)]
-pub struct Deadline {
-    started: std::time::Instant,
-    seconds: f64,
-}
-
-impl Deadline {
-    pub fn new(seconds: f64) -> Self {
-        Self {
-            started: std::time::Instant::now(),
-            seconds,
-        }
-    }
-
-    pub fn expired(&self) -> bool {
-        self.started.elapsed().as_secs_f64() >= self.seconds
     }
 }

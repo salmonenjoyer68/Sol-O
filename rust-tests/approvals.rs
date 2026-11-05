@@ -473,8 +473,9 @@ fn expired_actions_are_not_listed_and_cannot_be_decided() {
     let run_id = server.start_run();
     server.wait_for_run(&run_id);
     let action_id = server.pending()[0]["id"].as_i64().unwrap();
-    // Timestamps have second precision, so wait out the ~1s TTL.
-    std::thread::sleep(Duration::from_millis(1400));
+    // Timestamps have second precision, so wait out the ~1s TTL plus the
+    // sub-second phase the stored `created_at` was truncated at.
+    std::thread::sleep(Duration::from_millis(2600));
 
     assert!(server.pending().is_empty(), "expired actions are hidden");
     let approved = server.empty_post(&format!("/pending/{action_id}/approve"));
@@ -620,6 +621,17 @@ fn a_pending_action_that_cannot_be_stored_fails_the_run_instead_of_sending() {
         .iter()
         .any(|event| event["event"] == "approval_required"));
     assert!(!events.iter().any(|event| event["event"] == "notifier_sent"));
+
+    let run_failed = events
+        .iter()
+        .find(|event| event["event"] == "run_failed")
+        .expect("run_failed event");
+    assert_eq!(run_failed["data"]["failed_at"], "notifier");
+    assert_eq!(run_failed["data"]["error_type"], "tool_error");
+    assert!(run_failed["data"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("tool_error: "));
 }
 
 #[test]

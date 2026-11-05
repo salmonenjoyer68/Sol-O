@@ -38,6 +38,7 @@ pub enum FailureType {
     SchemaMismatch,
     Timeout,
     LlmError,
+    ToolError,
 }
 
 impl FailureType {
@@ -47,6 +48,7 @@ impl FailureType {
             Self::SchemaMismatch => "schema_mismatch",
             Self::Timeout => "timeout",
             Self::LlmError => "llm_error",
+            Self::ToolError => "tool_error",
         }
     }
 }
@@ -149,7 +151,9 @@ fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
 ///
 /// `on_attempt(call, attempt)` runs before every provider call. A tool envelope
 /// consumes a call but not a validation attempt; tools run for at most
-/// `max_tool_turns` turns per step.
+/// `max_tool_turns` turns per step. `call_timeout` overrides the configured
+/// per-call limit (the Sun passes the smaller of that limit and the remaining
+/// run budget); `None` uses the setting.
 #[allow(clippy::too_many_arguments)]
 pub fn run_validated(
     settings: &Settings,
@@ -160,12 +164,15 @@ pub fn run_validated(
     schema: &serde_json::Value,
     parse: &dyn Fn(serde_json::Value) -> Result<serde_json::Value, ParseError>,
     toolset: Option<&Toolset<'_>>,
+    call_timeout: Option<Duration>,
     on_attempt: &mut dyn FnMut(usize, usize),
 ) -> Result<ValidatedOutput, RunError> {
     let started = Instant::now();
     let system_prompt = load_system_prompt(agents_dir, agent)?;
     let model_override = llm::model_for(settings, agent);
-    let timeout = Duration::from_secs_f64(settings.llm_timeout_seconds.max(0.001));
+    let timeout = call_timeout
+        .unwrap_or_else(|| Duration::from_secs_f64(settings.llm_timeout_seconds))
+        .max(Duration::from_millis(1));
     let max_attempts = 1 + settings.llm_max_retries.max(0) as usize;
     let max_calls = max_attempts
         + if toolset.is_some() {
@@ -346,6 +353,7 @@ pub fn run_agent(
         OUTPUT_CONTRACT,
         &schema,
         &parse,
+        None,
         None,
         &mut |_, _| {},
     )?;
