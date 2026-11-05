@@ -17,10 +17,11 @@ use serde_json::{json, Value};
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 use crate::agents::{self, RunError};
+use crate::approvals::{self, ApprovalError};
 use crate::config::{Settings, ROOT};
 use crate::events::{sse_stream, EventBus};
 use crate::orchestrator::Orchestrator;
-use crate::persistence::{self, Db, RunDetail, RunRow, SavedEvent};
+use crate::persistence::{self, Db, PendingActionRow, RunDetail, RunRow, SavedEvent};
 use crate::reliability::redact;
 use crate::schemas::{AgentOutput, InboundRequest, OrchestrationRequest, RunRequest};
 
@@ -68,6 +69,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{run_id}", get(run_detail))
         .route("/runs/{run_id}/events", get(run_events))
         .route("/stream", get(stream))
+        .route("/pending", get(pending_actions))
+        .route("/pending/{action_id}/approve", post(approve_pending))
+        .route("/pending/{action_id}/reject", post(reject_pending))
         .layer(cors())
         .with_state(state)
 }
@@ -200,7 +204,13 @@ async fn inbound(
     require_non_empty("message", &request.message)?;
     let run_id = persistence::new_run_id();
     insert_run(&state.db, &run_id, &request.message, &request.source).await;
-    spawn_run(state.clone(), request.message, false, run_id.clone(), request.source);
+    spawn_run(
+        state.clone(),
+        request.message,
+        false,
+        run_id.clone(),
+        request.source,
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"run_id": run_id, "status": "accepted"})),
@@ -223,13 +233,7 @@ async fn insert_run(db: &Db, run_id: &str, task: &str, source: &str) {
 }
 
 /// Run the orchestration off the request path, marking the run failed on escape.
-fn spawn_run(
-    state: AppState,
-    task: String,
-    use_llm_planner: bool,
-    run_id: String,
-    source: String,
-) {
+fn spawn_run(state: AppState, task: String, use_llm_planner: bool, run_id: String, source: String) {
     tokio::spawn(async move {
         let orchestrator = state.orchestrator.clone();
         let db = state.db.clone();
@@ -328,6 +332,69 @@ async fn stream(State(state): State<AppState>, headers: HeaderMap) -> Response {
     headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
     headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
     response
+}
+
+async fn pending_actions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PendingActionRow>>, ApiError> {
+    let db = state.db.clone();
+    let ttl = state.settings.pending_ttl_hours;
+    let rows = blocking(move || db.list_pending(ttl)).await?;
+    Ok(Json(rows))
+}
+
+async fn approve_pending(
+    State(state): State<AppState>,
+    AxumPath(action_id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    decide(state, action_id, true).await
+}
+
+async fn reject_pending(
+    State(state): State<AppState>,
+    AxumPath(action_id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    decide(state, action_id, false).await
+}
+
+/// Claim the action, execute on approve, then publish the decision on the run.
+async fn decide(state: AppState, raw_id: String, approve: bool) -> Result<Json<Value>, ApiError> {
+    let action_id = raw_id.parse::<i64>().map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"detail": [{
+                "type": "int_parsing",
+                "loc": ["path", "action_id"],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": raw_id,
+            }]}),
+        )
+    })?;
+    let db = state.db.clone();
+    let settings = state.settings.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        if approve {
+            approvals::approve(&db, &settings, action_id)
+        } else {
+            approvals::reject(&db, &settings, action_id)
+        }
+    })
+    .await
+    .map_err(|error| database_error(&format!("approval task failed: {error}")))?
+    .map_err(|error| database_error(&error))?;
+
+    if let (Some(run_id), Some(event)) = (outcome.run_id, outcome.event) {
+        let _ = state.bus.publish(&run_id, "approval_decided", event).await;
+    }
+    outcome.response.map(Json).map_err(approval_error)
+}
+
+fn approval_error(error: ApprovalError) -> ApiError {
+    let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    ApiError::new(
+        status,
+        json!({"error": error.code, "detail": redact(&error.detail)}),
+    )
 }
 
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
