@@ -169,7 +169,8 @@ fn run_prints_the_reference_result_and_exits_zero() {
     assert_eq!(result["status"], "complete");
     assert_eq!(result["task"], TASK);
     assert_eq!(result["planner"], "hardcoded");
-    assert_eq!(result["plan"].as_array().unwrap().len(), 3);
+    // Three planned steps plus the logger and notifier system steps.
+    assert_eq!(result["plan"].as_array().unwrap().len(), 5);
     assert_eq!(result["outputs"].as_array().unwrap().len(), 5);
     assert!(result["run_id"].as_str().is_some());
     assert!(result["stopped_at"].is_null());
@@ -183,7 +184,20 @@ fn run_reads_the_task_from_a_file_and_accepts_the_plan_flag() {
     let database = dir.path().join("sol-o.db");
     let task_file = dir.path().join("task.txt");
     std::fs::write(&task_file, "  Plan the weekend launch  \n").unwrap();
-    let provider = happy_provider();
+    let plan = json!({
+        "steps": [
+            {"agent": "researcher", "task": "Research the launch"},
+            {"agent": "writer", "task": "Write it up"},
+            {"agent": "checker", "task": "Check the draft"}
+        ]
+    })
+    .to_string();
+    let provider = FakeProvider::start(vec![
+        Reply::content(plan),
+        Reply::content(researcher_output()),
+        Reply::content(writer_output()),
+        Reply::content(checker_output()),
+    ]);
     let output = cli(
         &database,
         &[
@@ -200,6 +214,10 @@ fn run_reads_the_task_from_a_file_and_accepts_the_plan_flag() {
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let result = json_tail(&stdout(&output));
     assert_eq!(result["task"], "Plan the weekend launch");
+    assert_eq!(result["planner"], "llm");
+    // Three planned steps plus the logger and notifier system steps.
+    assert_eq!(result["plan"].as_array().unwrap().len(), 5);
+    assert_eq!(result["plan"][0]["agent"], "researcher");
 }
 
 #[test]

@@ -1147,10 +1147,22 @@ impl Orchestrator {
                 }),
             );
         }
+        // The reference reports the plan it executed, system steps included.
+        for agent in SYSTEM_STEPS {
+            plan.push(PlanStep {
+                agent: agent.to_string(),
+                task: if agent == "logger" {
+                    LOGGER_TASK.to_string()
+                } else {
+                    NOTIFIER_TASK.to_string()
+                },
+            });
+        }
+
         Ok(OrchestrationResult {
             status: status.to_string(),
             task,
-            planner: "hardcoded",
+            planner,
             plan: plan
                 .iter()
                 .map(|step| PlanStepView {
