@@ -34,6 +34,8 @@ impl Server {
             "AGENT_MODELS",
             "LLM_MAX_RETRIES",
             "LLM_TIMEOUT_SECONDS",
+            "RUN_TIMEOUT_SECONDS",
+            "MAX_INPUT_CHARS",
             "TAVILY_API_KEY",
             "SOL_O_TAVILY_ENDPOINT",
             "REQUIRE_APPROVAL",
@@ -226,6 +228,31 @@ fn checker_output() -> String {
         "status": "complete",
         "verdict": "approved",
         "issues": [],
+        "clarification_needed": null
+    })
+    .to_string()
+}
+
+fn researcher_clarification(question: &str) -> String {
+    json!({
+        "agent": "researcher",
+        "status": "needs_clarification",
+        "task": TASK,
+        "summary": "Need more detail.",
+        "findings": [],
+        "conflicts": [],
+        "gaps": [],
+        "clarification_needed": question
+    })
+    .to_string()
+}
+
+fn checker_rejection(issues: Value) -> String {
+    json!({
+        "agent": "checker",
+        "status": "complete",
+        "verdict": "needs_changes",
+        "issues": issues,
         "clarification_needed": null
     })
     .to_string()
@@ -633,6 +660,498 @@ fn inbound_accepts_with_202_and_runs_the_same_plan() {
     assert!(saved.iter().any(|event| event["event"] == "plan_ready"));
     assert!(saved.iter().any(|event| event["event"] == "all_done"));
     assert_eq!(detail["agent_calls"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn a_clarification_stops_the_run_before_any_later_planet() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = FakeProvider::start(vec![Reply::content(researcher_clarification("Which city?"))]);
+    let server = start_server(&database, &provider, &[]);
+
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+
+    assert_eq!(detail["run"]["status"], "needs_clarification");
+    assert_eq!(detail["run"]["outputs"].as_array().unwrap().len(), 1);
+    assert_eq!(provider.requests().len(), 1, "no later planet may be called");
+
+    let saved = server.wait_for_event(run_id, "all_done");
+    let events: Vec<&str> = saved
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "plan_ready",
+            "agent_called",
+            "agent_working",
+            "search_failed",
+            "agent_working",
+            "agent_done",
+            "stopped",
+            "agent_called",
+            "logger_saved",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "notifier_sent",
+            "agent_done",
+            "all_done",
+        ]
+    );
+    assert_eq!(
+        saved[7]["data"],
+        json!({
+            "step": 1,
+            "agent": "researcher",
+            "status": "needs_clarification",
+            "reason": "Which city?",
+        })
+    );
+    assert_eq!(saved[6]["data"]["status"], "needs_clarification");
+    assert_eq!(saved[13]["data"], json!({"step": 3, "dry_run": true, "delivered": false, "parts": 1}));
+    assert_eq!(saved[15]["data"]["status"], "needs_clarification");
+    assert_eq!(saved[15]["data"]["steps"], 3);
+}
+
+#[test]
+fn exhausted_validation_attempts_fail_the_run_and_truncate_the_audit() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let raw = "x".repeat(5000);
+    let provider = FakeProvider::start(vec![
+        Reply::content(researcher_output()),
+        Reply::content(raw.clone()),
+        Reply::content(raw.clone()),
+        Reply::content(raw),
+    ]);
+    let server = start_server(&database, &provider, &[("LLM_MAX_RETRIES", "2")]);
+
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+
+    assert_eq!(detail["run"]["status"], "failed");
+    assert_eq!(detail["run"]["final_draft"], "");
+    assert!(detail["run"]["verdict"].is_null());
+    let outputs = detail["run"]["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 1, "earlier outputs survive the failure");
+    assert_eq!(outputs[0]["agent"], "researcher");
+    assert_eq!(provider.requests().len(), 4, "three writer attempts, no later step");
+
+    let saved = server.wait_for_event(run_id, "run_failed");
+    let events: Vec<&str> = saved
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "plan_ready",
+            "agent_called",
+            "agent_working",
+            "search_failed",
+            "agent_working",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "agent_working",
+            "agent_working",
+            "agent_failed",
+            "stopped",
+            "agent_called",
+            "logger_saved",
+            "agent_done",
+            "agent_called",
+            "notifier_skipped",
+            "agent_done",
+            "run_failed",
+        ]
+    );
+
+    let failed = &saved[11]["data"];
+    assert_eq!(failed["step"], 2);
+    assert_eq!(failed["agent"], "writer");
+    assert_eq!(failed["error"], "invalid_json");
+    assert_eq!(failed["error_type"], "invalid_json");
+    assert_eq!(failed["attempts"], 3);
+    assert_eq!(failed["tool_turns"], 0);
+    assert!(failed["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("invalid JSON:"));
+    let stopped = &saved[12]["data"];
+    assert_eq!(stopped["status"], "failed");
+    assert!(stopped["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("invalid_json: "));
+
+    // Audit rows: the successful step and the exhausted one, raw output capped.
+    let calls = detail["agent_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 2);
+    let writer = &calls[1];
+    assert_eq!(writer["status"], "failed");
+    assert_eq!(writer["error_type"], "invalid_json");
+    assert_eq!(writer["attempts"], 3);
+    assert_eq!(writer["tool_turns"], 0);
+    assert_eq!(writer["output_chars"], 5000);
+    let stored_raw = writer["raw_output"].as_str().unwrap();
+    assert_eq!(stored_raw, "x".repeat(2000), "raw output capped at 2000 chars");
+    assert!(writer["error_message"]
+        .as_str()
+        .unwrap()
+        .starts_with("invalid JSON:"));
+
+    // Failed runs skip the notifier and end with the failure event.
+    assert_eq!(saved[16]["data"], json!({"step": 3, "agent": "notifier"}));
+    assert_eq!(saved[17]["data"], json!({"step": 3}));
+    assert_eq!(saved[18]["data"]["status"], "skipped");
+    assert_eq!(
+        saved[19]["data"],
+        json!({
+            "failed_at": "writer",
+            "error_type": "invalid_json",
+            "message": stopped["reason"],
+        })
+    );
+    assert!(!events.contains(&"all_done"));
+}
+
+#[test]
+fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let first_issues = json!([
+        {"problem": "First problem", "location": "line 1", "suggestion": "Fix one"},
+        {"problem": "Second problem", "location": "line 2", "suggestion": "Fix two"}
+    ]);
+    let second_issues = json!([
+        {"problem": "Still wrong", "location": "line 1", "suggestion": "Fix it"}
+    ]);
+    let provider = FakeProvider::start(vec![
+        Reply::content(researcher_output()),
+        Reply::content(writer_output()),
+        Reply::content(checker_rejection(first_issues.clone())),
+        Reply::content(
+            json!({
+                "agent": "writer",
+                "status": "complete",
+                "draft": "Revised draft.",
+                "facts_used": ["orders rise"],
+                "notes": "",
+                "clarification_needed": null
+            })
+            .to_string(),
+        ),
+        Reply::content(checker_rejection(second_issues.clone())),
+    ]);
+    let server = start_server(&database, &provider, &[]);
+
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+
+    assert_eq!(detail["run"]["status"], "partial");
+    assert_eq!(detail["run"]["final_draft"], "Revised draft.");
+    assert_eq!(detail["run"]["verdict"], "needs_changes");
+    assert_eq!(provider.requests().len(), 5, "one writer revision and one rerun");
+    assert_eq!(detail["agent_calls"].as_array().unwrap().len(), 5);
+
+    let outputs = detail["run"]["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 5);
+    let expected_revision = format!(
+        "Revise your draft so it resolves every issue the checker reported. Use only facts from the earlier outputs; do not add new claims. Return the complete revised draft.\nIssues:\n{}",
+        serde_json::to_string_pretty(&first_issues).unwrap()
+    );
+    assert_eq!(outputs[3]["agent"], "writer");
+    assert_eq!(outputs[3]["task"], expected_revision);
+    assert_eq!(outputs[4]["agent"], "checker");
+    assert_eq!(
+        outputs[4]["task"],
+        "Re-review the revised writer draft against the researcher findings and confirm whether every previously reported issue is fixed."
+    );
+    assert_eq!(
+        outputs[4]["output"]["issues"],
+        second_issues,
+        "the second rejection's issues are preserved"
+    );
+    assert_eq!(outputs[4]["output"]["verdict"], "needs_changes");
+
+    let saved = server.wait_for_event(run_id, "all_done");
+    let events: Vec<&str> = saved
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "plan_ready",
+            "agent_called",
+            "agent_working",
+            "search_failed",
+            "agent_working",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "agent_done",
+            "revision_requested",
+            "agent_called",
+            "agent_working",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "agent_done",
+            "stopped",
+            "agent_called",
+            "logger_saved",
+            "agent_done",
+            "agent_called",
+            "agent_working",
+            "notifier_sent",
+            "agent_done",
+            "all_done",
+        ]
+    );
+    assert_eq!(
+        saved
+            .iter()
+            .filter(|event| event["event"] == "revision_requested")
+            .count(),
+        1
+    );
+    assert_eq!(
+        saved[13]["data"],
+        json!({"step": 3, "issues": 2})
+    );
+    assert_eq!(
+        saved[20]["data"],
+        json!({
+            "step": 5,
+            "agent": "checker",
+            "status": "partial",
+            "reason": "checker still rejected the revised draft with 1 issue(s)",
+        })
+    );
+    assert_eq!(saved[26]["data"]["step"], 7);
+    assert_eq!(saved[28]["data"]["status"], "partial");
+    assert_eq!(saved[28]["data"]["steps"], 7);
+
+    // The revision turns carry the revision instruction forward.
+    let requests = provider.requests();
+    let revision_message = requests[3].contents()[1];
+    assert!(revision_message.contains(
+        "Your step instruction:\nRevise your draft so it resolves every issue the checker reported."
+    ));
+    assert!(revision_message.contains("\"problem\": \"First problem\""));
+    assert!(requests[4].contents()[1].contains(
+        "Your step instruction:\nRe-review the revised writer draft"
+    ));
+}
+
+#[test]
+fn each_call_is_bounded_by_the_remaining_run_budget() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = FakeProvider::start(vec![
+        Reply::content(researcher_output()).delayed(Duration::from_secs(10)),
+    ]);
+    let server = start_server(
+        &database,
+        &provider,
+        &[
+            ("RUN_TIMEOUT_SECONDS", "4.0"),
+            ("LLM_TIMEOUT_SECONDS", "30"),
+            ("LLM_MAX_RETRIES", "0"),
+        ],
+    );
+
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+    assert_eq!(detail["run"]["status"], "failed");
+    assert_eq!(provider.requests().len(), 1);
+
+    let saved = server.wait_for_event(run_id, "run_failed");
+    let events: Vec<&str> = saved
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "plan_ready",
+            "agent_called",
+            "agent_working",
+            "search_failed",
+            "agent_working",
+            "agent_failed",
+            "stopped",
+            "agent_called",
+            "logger_saved",
+            "agent_done",
+            "agent_called",
+            "notifier_skipped",
+            "agent_done",
+            "run_failed",
+        ]
+    );
+    let failed = &saved[6]["data"];
+    assert_eq!(failed["error"], "timeout");
+    assert_eq!(failed["error_type"], "timeout");
+    assert_eq!(failed["attempts"], 1);
+    let message = failed["message"].as_str().unwrap();
+    assert!(message.starts_with("LLM call exceeded "), "{message}");
+    assert!(message.ends_with(" after 1 attempt(s)"), "{message}");
+    let call_timeout: f64 = message
+        .trim_start_matches("LLM call exceeded ")
+        .split('s')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        call_timeout < 30.0,
+        "the call timeout must come from the run budget, not LLM_TIMEOUT_SECONDS: {message}"
+    );
+    assert_eq!(saved[7]["data"]["reason"], "run_timeout");
+    assert_eq!(
+        saved[14]["data"],
+        json!({
+            "failed_at": "researcher",
+            "error_type": "timeout",
+            "message": "run_timeout",
+        })
+    );
+
+    let calls = detail["agent_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["error_type"], "timeout");
+    assert_eq!(calls[0]["attempts"], 1);
+    assert_eq!(calls[0]["status"], "failed");
+    let waited = calls[0]["duration_ms"].as_i64().unwrap();
+    assert!(
+        (1000..9000).contains(&waited),
+        "the client must give up near the remaining budget, waited {waited}ms"
+    );
+}
+
+#[test]
+fn an_expired_budget_fails_before_the_first_agent_without_calling_the_provider() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = FakeProvider::start(vec![]);
+    let server = start_server(&database, &provider, &[("RUN_TIMEOUT_SECONDS", "0.001")]);
+
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+
+    assert_eq!(detail["run"]["status"], "failed");
+    assert_eq!(detail["run"]["outputs"], json!([]));
+    assert_eq!(detail["agent_calls"], json!([]));
+    assert!(provider.requests().is_empty());
+
+    let saved = server.wait_for_event(run_id, "run_failed");
+    let events: Vec<&str> = saved
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "plan_ready",
+            "agent_called",
+            "agent_failed",
+            "stopped",
+            "agent_called",
+            "logger_saved",
+            "agent_done",
+            "agent_called",
+            "notifier_skipped",
+            "agent_done",
+            "run_failed",
+        ]
+    );
+    let failed = &saved[3]["data"];
+    assert_eq!(failed["step"], 1);
+    assert_eq!(failed["agent"], "researcher");
+    assert_eq!(failed["error"], "timeout");
+    assert_eq!(failed["error_type"], "timeout");
+    assert_eq!(failed["attempts"], 0);
+    assert!(failed.get("tool_turns").is_none());
+    assert_eq!(
+        saved[4]["data"],
+        json!({"step": 1, "agent": "researcher", "status": "failed", "reason": "run_timeout"})
+    );
+    assert_eq!(
+        saved[11]["data"],
+        json!({
+            "failed_at": "researcher",
+            "error_type": "timeout",
+            "message": "run_timeout",
+        })
+    );
+}
+
+#[test]
+fn an_over_long_task_is_truncated_and_the_warning_is_stored() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = FakeProvider::start(vec![
+        Reply::content(researcher_output()),
+        Reply::content(writer_output()),
+        Reply::content(checker_output()),
+    ]);
+    let server = start_server(&database, &provider, &[("MAX_INPUT_CHARS", "10")]);
+
+    let long_task = "abcdefghijklmnop";
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": long_task}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap();
+    let detail = server.wait_for_run(run_id);
+
+    assert_eq!(detail["run"]["status"], "complete");
+    assert_eq!(detail["run"]["task"], "abcdefghij");
+    assert_eq!(
+        detail["run"]["warning"],
+        "task truncated from 16 to 10 characters"
+    );
+
+    let saved = server.wait_for_event(run_id, "all_done");
+    assert_eq!(saved[0]["data"]["task"], "abcdefghij");
+    assert_eq!(saved[1]["data"]["steps"][0]["task"], "abcdefghij");
+    assert!(provider.requests()[0].contents()[1].starts_with(
+        "Original task:\nabcdefghij\n\nYour step instruction:\nabcdefghij\n"
+    ));
 }
 
 #[test]
