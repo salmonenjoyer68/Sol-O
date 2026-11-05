@@ -76,6 +76,8 @@
     color: var(--fg); padding: 0 12px; font-size: 14px;
   }
   #task:focus { border-color: rgba(255, 211, 107, 0.55); box-shadow: 0 0 0 3px rgba(255, 211, 107, 0.1); }
+  /* The UA default (#757575) is 4.27:1 on this field; --muted clears AA. */
+  #task::placeholder { color: var(--muted); }
   button {
     height: 34px; border-radius: 8px; border: 1px solid var(--border);
     background: rgba(22, 27, 52, 0.9); color: var(--fg); font-size: 12px;
@@ -528,7 +530,7 @@
 </main>
 
 <div id="topbar">
-  <span id="pill" class="pill">IDLE</span>
+  <button type="button" id="pill" class="pill">IDLE</button>
   <div class="replay-bar">
     <div id="replay-controls" class="hidden" role="group" aria-label="Replay controls">
       <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
@@ -1930,6 +1932,7 @@ function drawBeam(planet, position, now) {
 }
 
 function drawTrail(planet, position, now) {
+  if (reduceMotion) return;
   const age = now - planet.trailAt;
   if (!planet.trailAt || age > 850) return;
   const alpha = (1 - age / 850) * 0.55;
@@ -1951,7 +1954,7 @@ function drawPlanet(planet, position, now) {
   if (appear <= 0.01) return;
   const size = planet.size * (0.55 + 0.45 * appear);
   const pulse = 0.5 + 0.5 * Math.sin(now * 0.005 + planet.step * 1.7);
-  const flicker = planet.failed ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
+  const flicker = planet.failed && !reduceMotion ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
   const color = planet.failed ? "#ff5d5d" : planet.color;
   const glow = planet.working ? 26 + pulse * 18 : planet.done ? 14 : 9;
 
@@ -2122,7 +2125,8 @@ function updateAnimation(now) {
     const speed = planet.speed * (slowed ? 0.25 : 1) * (aligning ? 0 : 1);
     planet.angle += speed * (dt / 1000);
     const rate = 1 - Math.pow(0.001, dt / 1000);
-    planet.appear += (planet.target - planet.appear) * rate;
+    // State still changes on events; only the entrance ease is decoration.
+    planet.appear = reduceMotion ? planet.target : planet.appear + (planet.target - planet.appear) * rate;
   }
 
   if (state.alignPhase === "in") {
@@ -2296,6 +2300,15 @@ replayPause.addEventListener("click", () => {
 replaySpeed.addEventListener("click", toggleReplayRate);
 approveBtn.addEventListener("click", () => decide("approve"));
 rejectBtn.addEventListener("click", () => decide("reject"));
+/* The gate is aria-modal and covers the page: keep Tab on its own buttons
+   instead of letting focus reach the controls the scrim blocks. */
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || approvalBox.classList.contains("hidden")) return;
+  const items = [approveBtn, rejectBtn];
+  const index = items.indexOf(document.activeElement);
+  event.preventDefault();
+  items[(index + (event.shiftKey ? items.length - 1 : 1)) % items.length].focus();
+});
 panelClose.addEventListener("click", closeDrawer);
 outputClose.addEventListener("click", () => {
   outputBox.classList.add("hidden");
