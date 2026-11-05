@@ -36,7 +36,10 @@ impl Server {
         ] {
             command.env_remove(name);
         }
-        command.env("SOL_O_DB", database).current_dir(ROOT);
+        command
+            .env("SOL_O_DB", database)
+            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
+            .current_dir(ROOT);
         for (name, value) in envs {
             command.env(name, value);
         }
