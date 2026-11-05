@@ -167,6 +167,13 @@
   #approval .row { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
   #approve { background: rgba(74, 222, 128, .16); border-color: rgba(74,222,128,.5); color: #b9f6cf; }
   #reject { background: rgba(248, 113, 113, .12); border-color: rgba(248,113,113,.45); color: #ffc9c9; }
+  /* Replayed gate is a read-only notice: no scrim, no modal, no decisions. */
+  #approval.replay {
+    inset: calc(var(--nav-h) + 16px) 0 auto 0; padding: 0 16px;
+    background: none; backdrop-filter: none; pointer-events: none;
+  }
+  #approval.replay .card { pointer-events: auto; margin: 0 auto; border-color: var(--border); }
+  #approval.replay .row { display: none; }
 
   #tooltip {
     position: fixed; z-index: 30; pointer-events: none; max-width: 320px;
@@ -1162,6 +1169,9 @@ function syncDecisionGate() {
   const replay = state.mode === "replay";
   approveBtn.disabled = replay || deciding;
   rejectBtn.disabled = replay || deciding;
+  approvalBox.classList.toggle("replay", replay);
+  if (replay) approvalBox.removeAttribute("aria-modal");
+  else approvalBox.setAttribute("aria-modal", "true");
   approvalLabel.textContent = replay
     ? "Stored pending action · replay is read-only · nothing will be sent"
     : deciding
