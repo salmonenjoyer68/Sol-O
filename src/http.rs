@@ -5,20 +5,24 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
+use crate::agents::{self, RunError};
 use crate::config::{Settings, ROOT};
 use crate::events::{sse_stream, EventBus};
-use crate::persistence::{Db, RunDetail, RunRow, SavedEvent};
+use crate::llm;
+use crate::persistence::{self, Db, NewAgentCall, RunDetail, RunRow, SavedEvent};
 use crate::reliability::redact;
+use crate::schemas::{AgentOutput, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
@@ -53,6 +57,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/run", post(run))
         .route("/runs", get(runs))
         .route("/runs/{run_id}", get(run_detail))
         .route("/runs/{run_id}/events", get(run_events))
@@ -90,6 +95,130 @@ async fn index(State(state): State<AppState>) -> Result<Response, ApiError> {
         )
     })?;
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response())
+}
+
+/// Run one file-backed agent, audit the call, and return its validated JSON.
+async fn run(
+    State(state): State<AppState>,
+    payload: Result<Json<RunRequest>, JsonRejection>,
+) -> Result<Json<AgentOutput>, ApiError> {
+    let Json(request) = payload.map_err(unprocessable)?;
+    for (field, value) in [("agent", &request.agent), ("task", &request.task)] {
+        if value.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"detail": [{
+                    "type": "string_too_short",
+                    "loc": ["body", field],
+                    "msg": "String should have at least 1 character"
+                }]}),
+            ));
+        }
+    }
+    let settings = state.settings.clone();
+    let db = state.db.clone();
+    match tokio::task::spawn_blocking(move || execute_run(&settings, &db, request)).await {
+        Ok(result) => result.map(Json),
+        Err(error) => Err(database_error(&format!("run task failed: {error}"))),
+    }
+}
+
+fn unprocessable(rejection: JsonRejection) -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({"detail": [{"type": "json_invalid", "loc": ["body"], "msg": rejection.body_text()}]}),
+    )
+}
+
+fn execute_run(settings: &Settings, db: &Db, request: RunRequest) -> Result<AgentOutput, ApiError> {
+    let run_id = persistence::new_run_id();
+    let started_at = persistence::now_iso();
+    let started = std::time::Instant::now();
+    let input_chars = request.task.chars().count() as i64;
+    let model = llm::resolved_model(settings, &request.agent);
+    let outcome = agents::run_agent(settings, &request.agent, &request.task);
+
+    // Every request gets one audit row, including a failed prompt lookup.
+    let (result, status, error_type, error_message, attempts, raw_output) = match outcome {
+        Ok(outcome) => (
+            Ok(outcome.output),
+            "ok",
+            None,
+            None,
+            outcome.attempts as i64,
+            outcome.raw,
+        ),
+        Err(RunError::NotFound(agent)) => {
+            let detail = format!("unknown agent: {agent}");
+            (
+                Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    json!({"error": "agent_not_found", "agent": agent}),
+                )),
+                "failed",
+                Some("agent_not_found"),
+                Some(detail),
+                0,
+                String::new(),
+            )
+        }
+        Err(RunError::Unreadable(detail)) => (
+            Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "agent_unreadable", "detail": detail}),
+            )),
+            "failed",
+            Some("agent_unreadable"),
+            Some(detail),
+            0,
+            String::new(),
+        ),
+        Err(RunError::Run(error)) => {
+            let api_error = match error.failure_type {
+                agents::FailureType::Timeout => ApiError::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    json!({"error": "llm_timeout", "detail": error.detail}),
+                ),
+                agents::FailureType::LlmError => ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    json!({"error": "llm_error", "detail": error.detail}),
+                ),
+                _ => ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    json!({"error": "invalid_agent_output", "raw": error.raw}),
+                ),
+            };
+            (
+                Err(api_error),
+                "failed",
+                Some(error.failure_type.as_str()),
+                Some(error.detail),
+                error.attempts as i64,
+                error.raw,
+            )
+        }
+    };
+
+    let call = NewAgentCall {
+        run_id: &run_id,
+        step: 1,
+        agent: &request.agent,
+        started_at: &started_at,
+        duration_ms: started.elapsed().as_millis() as i64,
+        attempts,
+        tool_turns: 0,
+        status,
+        error_type,
+        error_message: error_message.as_deref(),
+        input_chars,
+        output_chars: raw_output.chars().count() as i64,
+        raw_output: &raw_output,
+        model: &model,
+    };
+    if let Err(error) = db.save_agent_call(&call) {
+        tracing::warn!(error = %error, "could not write agent_calls row");
+    }
+    result
 }
 
 #[derive(Deserialize)]

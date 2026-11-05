@@ -39,3 +39,7 @@ path = "rust-tests/boot.rs"
 [[test]]
 name = "stream"
 path = "rust-tests/stream.rs"
+
+[[test]]
+name = "run"
+path = "rust-tests/run.rs"
