@@ -19,9 +19,10 @@ use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use crate::agents::{self, RunError};
 use crate::config::{Settings, ROOT};
 use crate::events::{sse_stream, EventBus};
-use crate::persistence::{Db, RunDetail, RunRow, SavedEvent};
+use crate::orchestrator::Orchestrator;
+use crate::persistence::{self, Db, RunDetail, RunRow, SavedEvent};
 use crate::reliability::redact;
-use crate::schemas::{AgentOutput, RunRequest};
+use crate::schemas::{AgentOutput, InboundRequest, OrchestrationRequest, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     pub db: Db,
     pub bus: Arc<EventBus>,
+    pub orchestrator: Arc<Orchestrator>,
     pub web_index: PathBuf,
     pub keepalive: Duration,
 }
@@ -38,10 +40,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(settings: Settings, db: Db) -> Self {
         let bus = Arc::new(EventBus::new(db.clone()));
+        let settings = Arc::new(settings);
+        let orchestrator = Arc::new(Orchestrator::new(settings.clone(), db.clone(), bus.clone()));
         Self {
-            settings: Arc::new(settings),
+            settings,
             db,
             bus,
+            orchestrator,
             web_index: PathBuf::from(ROOT).join("web").join("index.html"),
             keepalive: Duration::from_secs(15),
         }
@@ -57,6 +62,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/run", post(run))
+        .route("/orchestrate", post(orchestrate))
+        .route("/inbound", post(inbound))
         .route("/runs", get(runs))
         .route("/runs/{run_id}", get(run_detail))
         .route("/runs/{run_id}/events", get(run_events))
@@ -102,24 +109,28 @@ async fn run(
     payload: Result<Json<RunRequest>, JsonRejection>,
 ) -> Result<Json<AgentOutput>, ApiError> {
     let Json(request) = payload.map_err(unprocessable)?;
-    for (field, value) in [("agent", &request.agent), ("task", &request.task)] {
-        if value.is_empty() {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                json!({"detail": [{
-                    "type": "string_too_short",
-                    "loc": ["body", field],
-                    "msg": "String should have at least 1 character"
-                }]}),
-            ));
-        }
-    }
+    require_non_empty("agent", &request.agent)?;
+    require_non_empty("task", &request.task)?;
     let settings = state.settings.clone();
     let agents_dir = PathBuf::from(ROOT).join("agents");
     match tokio::task::spawn_blocking(move || execute_run(&settings, &agents_dir, request)).await {
         Ok(result) => result.map(Json),
         Err(error) => Err(database_error(&format!("run task failed: {error}"))),
     }
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), ApiError> {
+    if !value.is_empty() {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({"detail": [{
+            "type": "string_too_short",
+            "loc": ["body", field],
+            "msg": "String should have at least 1 character"
+        }]}),
+    ))
 }
 
 fn unprocessable(rejection: JsonRejection) -> ApiError {
@@ -159,6 +170,102 @@ fn execute_run(
             ),
         }),
     }
+}
+
+/// Queue a full run and return its id so the browser can watch it live.
+async fn orchestrate(
+    State(state): State<AppState>,
+    payload: Result<Json<OrchestrationRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(request) = payload.map_err(unprocessable)?;
+    require_non_empty("task", &request.task)?;
+    let run_id = persistence::new_run_id();
+    insert_run(&state.db, &run_id, &request.task, &request.source).await;
+    spawn_run(
+        state.clone(),
+        request.task,
+        request.use_llm_planner,
+        run_id.clone(),
+        request.source,
+    );
+    Ok(Json(json!({"run_id": run_id, "status": "accepted"})))
+}
+
+/// Accept an inbound message, queue the orchestration, return the run id.
+async fn inbound(
+    State(state): State<AppState>,
+    payload: Result<Json<InboundRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let Json(request) = payload.map_err(unprocessable)?;
+    require_non_empty("message", &request.message)?;
+    let run_id = persistence::new_run_id();
+    insert_run(&state.db, &run_id, &request.message, &request.source).await;
+    spawn_run(state.clone(), request.message, false, run_id.clone(), request.source);
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"run_id": run_id, "status": "accepted"})),
+    ))
+}
+
+/// Insert the `running` row before the request returns; a failure still accepts.
+async fn insert_run(db: &Db, run_id: &str, task: &str, source: &str) {
+    let db = db.clone();
+    let label = run_id.to_string();
+    let (id, task, source) = (label.clone(), task.to_string(), source.to_string());
+    let outcome = tokio::task::spawn_blocking(move || db.start_run(&id, &task, &source)).await;
+    match outcome {
+        Ok(Err(error)) => {
+            tracing::error!(run_id = label, %error, "could not create run row; run still accepted");
+        }
+        Err(error) => tracing::error!(run_id = label, %error, "run insert task failed"),
+        Ok(Ok(())) => {}
+    }
+}
+
+/// Run the orchestration off the request path, marking the run failed on escape.
+fn spawn_run(
+    state: AppState,
+    task: String,
+    use_llm_planner: bool,
+    run_id: String,
+    source: String,
+) {
+    tokio::spawn(async move {
+        let orchestrator = state.orchestrator.clone();
+        let db = state.db.clone();
+        let bus = state.bus.clone();
+        let job = {
+            let run_id = run_id.clone();
+            tokio::task::spawn_blocking(move || {
+                orchestrator.run(&task, use_llm_planner, &run_id, &source)
+            })
+        };
+        let outcome = match job.await {
+            Ok(Ok(())) => None,
+            Ok(Err(message)) => Some(message),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(message) = outcome {
+            fail_run(&db, &bus, &run_id, message).await;
+        }
+    });
+}
+
+async fn fail_run(db: &Db, bus: &EventBus, run_id: &str, message: String) {
+    let db = db.clone();
+    let id = run_id.to_string();
+    let _ = tokio::task::spawn_blocking(move || db.set_run_status(&id, "failed")).await;
+    let _ = bus
+        .publish(
+            run_id,
+            "run_failed",
+            json!({
+                "failed_at": "sun",
+                "error_type": "llm_error",
+                "message": redact(&message),
+            }),
+        )
+        .await;
 }
 
 #[derive(Deserialize)]
