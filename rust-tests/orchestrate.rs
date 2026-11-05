@@ -38,6 +38,13 @@ impl Server {
             "MAX_INPUT_CHARS",
             "TAVILY_API_KEY",
             "SOL_O_TAVILY_ENDPOINT",
+            "REQUIRE_APPROVAL",
+            "AUTO_APPROVE",
+            "PENDING_TTL_HOURS",
+            "DRY_RUN",
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+            "SOL_O_TELEGRAM_ENDPOINT",
         ] {
             command.env_remove(name);
         }
@@ -139,8 +146,7 @@ impl FakeTavily {
                     if line == "\r\n" || line == "\n" {
                         break;
                     }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:")
-                    {
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                         content_length = value.trim().parse().unwrap_or(0);
                     }
                 }
@@ -243,6 +249,8 @@ fn provider_env(base_url: &str) -> Vec<(String, String)> {
 
 fn start_server(database: &Path, provider: &FakeProvider, extra: &[(&str, &str)]) -> Server {
     let mut envs = provider_env(provider.base_url());
+    // These tests exercise the auto-approved path; approval has its own suite.
+    envs.push(("AUTO_APPROVE".to_string(), "true".to_string()));
     for (name, value) in extra {
         envs.push((name.to_string(), value.to_string()));
     }
@@ -319,7 +327,9 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
     let run_id = accepted["run_id"].as_str().expect("run id").to_string();
     assert_eq!(accepted["status"], "accepted");
     assert_eq!(run_id.len(), 32, "uuid4().hex length: {run_id}");
-    assert!(run_id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(run_id
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 
     // The row exists as running before the first agent answers.
     let early = server.get(&format!("/runs/{run_id}"));
@@ -336,13 +346,21 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
         .unwrap();
 
     // One saved event per live event, same order and payload.
-    assert_eq!(saved.len(), live_events.len(), "replay matches the live stream");
+    assert_eq!(
+        saved.len(),
+        live_events.len(),
+        "replay matches the live stream"
+    );
     for (index, (live_event, saved_event)) in live_events.iter().zip(&saved).enumerate() {
         assert_eq!(saved_event["seq"], live_event["seq"], "seq {index}");
         assert_eq!(saved_event["event"], live_event["event"], "event {index}");
         assert_eq!(saved_event["data"], live_event["data"], "data {index}");
         assert_eq!(saved_event["run_id"], run_id.as_str());
-        assert_eq!(saved_event["seq"], index as i64 + 1, "per-run seq starts at 1");
+        assert_eq!(
+            saved_event["seq"],
+            index as i64 + 1,
+            "per-run seq starts at 1"
+        );
     }
 
     let events: Vec<&str> = saved
@@ -369,7 +387,8 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
             "logger_saved",
             "agent_done",
             "agent_called",
-            "notifier_skipped",
+            "agent_working",
+            "notifier_sent",
             "agent_done",
             "all_done",
         ]
@@ -385,10 +404,16 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
 
     assert_eq!(saved[2]["data"]["step"], 1);
     assert_eq!(saved[2]["data"]["agent"], "researcher");
-    assert_eq!(saved[3]["data"], json!({"agent": "researcher", "attempt": 1, "call": 1, "step": 1}));
+    assert_eq!(
+        saved[3]["data"],
+        json!({"agent": "researcher", "attempt": 1, "call": 1, "step": 1})
+    );
     assert_eq!(saved[4]["data"]["query"], TASK);
     assert_eq!(saved[4]["data"]["results"], 2);
-    assert_eq!(saved[5]["data"], json!({"agent": "researcher", "attempt": 1, "call": 1, "step": 1}));
+    assert_eq!(
+        saved[5]["data"],
+        json!({"agent": "researcher", "attempt": 1, "call": 1, "step": 1})
+    );
     assert_eq!(saved[6]["data"]["status"], "complete");
     assert_eq!(saved[6]["data"]["attempts"], 1);
     assert_eq!(saved[6]["data"]["tool_turns"], 0);
@@ -401,24 +426,38 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
     );
     assert_eq!(saved[12]["data"]["summary"], "approved");
     assert_eq!(saved[13]["data"], json!({"agent": "logger", "step": 4}));
-    assert_eq!(saved[14]["data"], json!({"agent": "logger", "run_id": run_id, "step": 4}));
+    assert_eq!(
+        saved[14]["data"],
+        json!({"agent": "logger", "run_id": run_id, "step": 4})
+    );
     assert_eq!(saved[15]["data"]["status"], "complete");
     assert_eq!(saved[15]["data"]["summary"], "complete");
     assert_eq!(saved[16]["data"], json!({"agent": "notifier", "step": 5}));
-    assert_eq!(saved[17]["data"], json!({"step": 5}));
-    assert_eq!(saved[18]["data"]["status"], "skipped");
-    assert_eq!(saved[19]["data"]["status"], "complete");
-    assert_eq!(saved[19]["data"]["steps"], 5);
     assert_eq!(
-        saved[19]["data"]["seconds"],
-        saved[19]["data"]["duration_seconds"]
+        saved[17]["data"],
+        json!({"agent": "notifier", "attempt": 1, "call": 1, "step": 5})
+    );
+    assert_eq!(
+        saved[18]["data"],
+        json!({"dry_run": true, "delivered": false, "parts": 1, "step": 5})
+    );
+    assert_eq!(saved[19]["data"]["status"], "complete");
+    assert_eq!(saved[19]["data"]["summary"], "complete");
+    assert_eq!(saved[20]["data"]["status"], "complete");
+    assert_eq!(saved[20]["data"]["steps"], 5);
+    assert_eq!(
+        saved[20]["data"]["seconds"],
+        saved[20]["data"]["duration_seconds"]
     );
 
     // The run row and its stored outputs.
     let run = &detail["run"];
     assert_eq!(run["status"], "complete");
     assert_eq!(run["task"], TASK);
-    assert_eq!(run["final_draft"], "Dear operator, online ordering helps your cafe.");
+    assert_eq!(
+        run["final_draft"],
+        "Dear operator, online ordering helps your cafe."
+    );
     assert_eq!(run["verdict"], "approved");
     assert!(run["warning"].is_null());
     assert_eq!(run["source"], "");
@@ -469,10 +508,16 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
     assert_eq!(agents, ["researcher", "writer", "checker"]);
 
     let tool_calls = detail["tool_calls"].as_array().unwrap();
-    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(
+        tool_calls.len(),
+        2,
+        "search plus the auto-approved telegram send"
+    );
     assert_eq!(tool_calls[0]["tool"], "search");
     assert_eq!(tool_calls[0]["status"], "ok");
     assert!(tool_calls[0]["error_message"].is_null());
+    assert_eq!(tool_calls[1]["tool"], "telegram");
+    assert_eq!(tool_calls[1]["status"], "ok");
     assert_eq!(detail["pending_actions"], json!([]));
 
     // Plan order and the reference message layout.
@@ -508,7 +553,11 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
     assert!(third.contains("\"agent\": \"writer\""));
     assert!(third.contains("Dear operator, online ordering helps your cafe."));
 
-    assert_eq!(tavily.queries(), vec![TASK.to_string()], "one search per run");
+    assert_eq!(
+        tavily.queries(),
+        vec![TASK.to_string()],
+        "one search per run"
+    );
 }
 
 #[test]
@@ -543,13 +592,17 @@ fn a_search_failure_still_completes_the_run_with_the_no_results_note() {
     assert_eq!(failed["data"]["reason"], "TAVILY_API_KEY is not set");
 
     let tool_calls = detail["tool_calls"].as_array().unwrap();
-    assert_eq!(tool_calls.len(), 1);
-    assert_eq!(tool_calls[0]["tool"], "search");
-    assert_eq!(tool_calls[0]["status"], "failed");
+    let search_calls: Vec<&Value> = tool_calls
+        .iter()
+        .filter(|call| call["tool"] == "search")
+        .collect();
+    assert_eq!(search_calls.len(), 1);
+    assert_eq!(search_calls[0]["status"], "failed");
     assert_eq!(
-        tool_calls[0]["error_message"],
+        search_calls[0]["error_message"],
         "TAVILY_API_KEY is not set"
     );
+    assert!(tool_calls.iter().any(|call| call["tool"] == "telegram"));
 
     let requests = provider.requests();
     let user = requests[0].contents()[1];
@@ -558,7 +611,10 @@ fn a_search_failure_still_completes_the_run_with_the_no_results_note() {
     ));
     assert!(user.contains("\"results\": []"));
     assert_eq!(provider.requests().len(), 3);
-    assert_eq!(detail["run"]["final_draft"], "Dear operator, online ordering helps your cafe.");
+    assert_eq!(
+        detail["run"]["final_draft"],
+        "Dear operator, online ordering helps your cafe."
+    );
 }
 
 #[test]
@@ -631,7 +687,8 @@ fn a_clarification_stops_the_run_before_any_later_planet() {
             "logger_saved",
             "agent_done",
             "agent_called",
-            "notifier_skipped",
+            "agent_working",
+            "notifier_sent",
             "agent_done",
             "all_done",
         ]
@@ -646,9 +703,9 @@ fn a_clarification_stops_the_run_before_any_later_planet() {
         })
     );
     assert_eq!(saved[6]["data"]["status"], "needs_clarification");
-    assert_eq!(saved[12]["data"], json!({"step": 3}));
-    assert_eq!(saved[14]["data"]["status"], "needs_clarification");
-    assert_eq!(saved[14]["data"]["steps"], 3);
+    assert_eq!(saved[13]["data"], json!({"step": 3, "dry_run": true, "delivered": false, "parts": 1}));
+    assert_eq!(saved[15]["data"]["status"], "needs_clarification");
+    assert_eq!(saved[15]["data"]["steps"], 3);
 }
 
 #[test]
@@ -861,7 +918,8 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
             "logger_saved",
             "agent_done",
             "agent_called",
-            "notifier_skipped",
+            "agent_working",
+            "notifier_sent",
             "agent_done",
             "all_done",
         ]
@@ -886,8 +944,9 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
             "reason": "checker still rejected the revised draft with 1 issue(s)",
         })
     );
-    assert_eq!(saved[27]["data"]["status"], "partial");
-    assert_eq!(saved[27]["data"]["steps"], 7);
+    assert_eq!(saved[26]["data"]["step"], 7);
+    assert_eq!(saved[28]["data"]["status"], "partial");
+    assert_eq!(saved[28]["data"]["steps"], 7);
 
     // The revision turns carry the revision instruction forward.
     let requests = provider.requests();
@@ -1106,7 +1165,10 @@ fn orchestrate_validates_its_body() {
 
     let empty = server.post("/orchestrate", &json!({"task": ""}));
     assert_eq!(empty.status(), 422);
-    assert_eq!(empty.json::<Value>().unwrap()["detail"][0]["loc"], json!(["body", "task"]));
+    assert_eq!(
+        empty.json::<Value>().unwrap()["detail"][0]["loc"],
+        json!(["body", "task"])
+    );
 
     let unknown = server.post("/orchestrate", &json!({"task": "x", "surprise": true}));
     assert_eq!(unknown.status(), 422);

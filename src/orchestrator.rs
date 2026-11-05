@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::agents::{self, FailureType, ParseError, RunError, STEP_CONTRACT};
+use crate::approvals::{approval_required, create_pending};
 use crate::config::{Settings, ROOT};
 use crate::events::EventBus;
 use crate::llm;
@@ -19,6 +20,7 @@ use crate::persistence::{self, Db, NewAgentCall, NewToolCall};
 use crate::reliability::{redact, truncate, Deadline};
 use crate::schemas::{self, step_schema};
 use crate::search::{SearchTool, TavilySearch};
+use crate::telegram::{self, TelegramError};
 
 pub const DEFAULT_PLAN: [&str; 3] = ["researcher", "writer", "checker"];
 pub const SYSTEM_STEPS: [&str; 2] = ["logger", "notifier"];
@@ -106,7 +108,9 @@ struct Emitter<'a> {
 
 impl Emitter<'_> {
     fn emit(&self, event: &str, data: Value) {
-        let _ = self.handle.block_on(self.bus.publish(self.run_id, event, data));
+        let _ = self
+            .handle
+            .block_on(self.bus.publish(self.run_id, event, data));
     }
 }
 
@@ -212,10 +216,7 @@ impl Orchestrator {
         while reason.is_none() && index < plan.len() {
             let step = plan[index].clone();
             let number = outputs.len() as i64 + 1;
-            emitter.emit(
-                "agent_called",
-                json!({"step": number, "agent": step.agent}),
-            );
+            emitter.emit("agent_called", json!({"step": number, "agent": step.agent}));
 
             // The whole-run budget is checked before the call, never mid-call:
             // a step that never starts records no audit row.
@@ -293,8 +294,7 @@ impl Orchestrator {
                 let block = self.search_context(&task, run_id, &emitter);
                 extra = format!(
                     "Web search results (JSON):\n{}",
-                    serde_json::to_string_pretty(&block)
-                        .expect("search context serializes")
+                    serde_json::to_string_pretty(&block).expect("search context serializes")
                 );
                 search_block = Some(block);
             }
@@ -303,9 +303,8 @@ impl Orchestrator {
             let Some(schema) = step_schema(&step.agent) else {
                 return Err(format!("unknown agent: {}", step.agent));
             };
-            let parse_error = |message: String| {
-                ParseError::new(FailureType::SchemaMismatch, message)
-            };
+            let parse_error =
+                |message: String| ParseError::new(FailureType::SchemaMismatch, message);
             let parse = |value: Value| {
                 schemas::validate_step_output(&step.agent, value).map_err(parse_error)
             };
@@ -414,8 +413,8 @@ impl Orchestrator {
                 Err(other) => return Err(format!("{other:?}")),
             };
 
-            let raw_output = serde_json::to_string(&validated.output)
-                .expect("validated output serializes");
+            let raw_output =
+                serde_json::to_string(&validated.output).expect("validated output serializes");
             self.record_agent_call(NewAgentCall {
                 run_id: run_id.to_string(),
                 step: number,
@@ -538,6 +537,80 @@ impl Orchestrator {
 
         let final_draft = final_draft(&outputs);
         let final_verdict = final_verdict(&outputs);
+        let final_issues = final_issues(&outputs);
+
+        // Decide the notifier path before the logger row is written so its
+        // status is accurate: failed runs skip, approval stores a pending row.
+        let mut notify_mode = "send";
+        let mut pending_action_id: Option<i64> = None;
+        let mut notify_error: Option<String> = None;
+        if status == "failed" {
+            notify_mode = "skipped";
+        } else if approval_required(&self.settings) {
+            let payload = approval_payload(
+                &task,
+                status,
+                &final_draft,
+                final_verdict.as_deref(),
+                &final_issues,
+                None,
+            );
+            match create_pending(&self.db, run_id, &payload) {
+                Ok(action_id) => {
+                    pending_action_id = Some(action_id);
+                    notify_mode = "pending";
+                    status = "awaiting_approval";
+                    let preview = payload["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let preview: String = preview.chars().take(140).collect();
+                    emitter.emit(
+                        "approval_required",
+                        json!({
+                            "run_id": run_id,
+                            "action_id": action_id,
+                            "status": status,
+                            "payload": {
+                                "task": payload["task"],
+                                "draft": payload["draft"],
+                                "verdict": &final_verdict,
+                                "issues": &final_issues,
+                            },
+                        }),
+                    );
+                    emitter.emit(
+                        "awaiting_approval",
+                        json!({"pending_id": action_id, "preview": preview}),
+                    );
+                }
+                Err(error) => {
+                    // Never send without a stored approval.
+                    tracing::error!(run_id, %error, "could not store pending action");
+                    notify_mode = "error";
+                    let notify_error_text = redact(&error);
+                    notify_error = Some(notify_error_text.clone());
+                    status = "failed";
+                    failed_at = Some("notifier".to_string());
+                    stopped_at = Some("notifier".to_string());
+                    reason = Some(format!("tool_error: {notify_error_text}"));
+                    failure = Some(Failure::new(
+                        "notifier",
+                        FailureType::ToolError,
+                        &format!("tool_error: {notify_error_text}"),
+                        "",
+                        0,
+                        0,
+                    ));
+                    emitter.emit(
+                        "notifier_failed",
+                        json!({"agent": "notifier", "reason": notify_error}),
+                    );
+                }
+            }
+        }
 
         // Logger: always runs, success or failure.
         let number = outputs.len() as i64 + 1;
@@ -596,21 +669,109 @@ impl Orchestrator {
             }),
         );
 
-        // Notifier: #31 wires approvals and Telegram delivery; until then it
-        // records a skip and sends nothing.
+        // Notifier: sends, waits for approval, or skips failed runs.
         let number = outputs.len() as i64 + 1;
         emitter.emit("agent_called", json!({"step": number, "agent": "notifier"}));
         let step_started = Instant::now();
-        let notify_output = if status == "failed" {
-            json!({"agent": "notifier", "status": "skipped", "reason": "run failed; nothing sent"})
-        } else {
-            json!({
+        let notify_output = match notify_mode {
+            "pending" => {
+                let action_id = pending_action_id.unwrap_or_default();
+                emitter.emit(
+                    "notifier_pending",
+                    json!({"step": number, "action_id": action_id}),
+                );
+                json!({
+                    "agent": "notifier",
+                    "status": "awaiting_approval",
+                    "pending_action_id": action_id,
+                })
+            }
+            "skipped" => {
+                emitter.emit("notifier_skipped", json!({"step": number}));
+                json!({"agent": "notifier", "status": "skipped", "reason": "run failed; nothing sent"})
+            }
+            "error" => json!({
                 "agent": "notifier",
-                "status": "skipped",
-                "reason": "delivery and approvals are not wired yet",
-            })
+                "status": "failed",
+                "error": notify_error.unwrap_or_else(|| "could not store pending action".to_string()),
+            }),
+            _ => {
+                let text = notification_text(
+                    &task,
+                    status,
+                    &final_draft,
+                    final_verdict.as_deref(),
+                    &final_issues,
+                    None,
+                );
+                emitter.emit(
+                    "agent_working",
+                    json!({"step": number, "agent": "notifier", "attempt": 1, "call": 1}),
+                );
+                if deadline.expired() {
+                    // The budget covers delivery too: never start a send it cannot finish.
+                    let message = "run exceeded its time budget before sending";
+                    status = "failed";
+                    failed_at = Some("notifier".to_string());
+                    stopped_at = Some("notifier".to_string());
+                    reason = Some("run_timeout".to_string());
+                    failure = Some(Failure::new(
+                        "notifier",
+                        FailureType::Timeout,
+                        &format!("run_timeout: {message}"),
+                        "",
+                        0,
+                        0,
+                    ));
+                    if let Err(error) = self.db.set_run_status(run_id, status) {
+                        tracing::error!(run_id, %error, "could not mark run failed");
+                    }
+                    emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                    json!({"agent": "notifier", "status": "failed", "error": message})
+                } else {
+                    match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds) {
+                        Ok(delivery) => {
+                            emitter.emit(
+                                "notifier_sent",
+                                json!({
+                                    "step": number,
+                                    "dry_run": delivery.dry_run,
+                                    "delivered": delivery.delivered,
+                                    "parts": delivery.parts,
+                                }),
+                            );
+                            json!({
+                                "agent": "notifier",
+                                "status": "complete",
+                                "dry_run": delivery.dry_run,
+                                "delivered": delivery.delivered,
+                                "parts": delivery.parts,
+                            })
+                        }
+                        Err(error) => {
+                            let message = error.message().to_string();
+                            status = "failed";
+                            failed_at = Some("notifier".to_string());
+                            stopped_at = Some("notifier".to_string());
+                            reason = Some(format!("tool_error: {message}"));
+                            failure = Some(Failure::new(
+                                "notifier",
+                                FailureType::ToolError,
+                                &format!("tool_error: {message}"),
+                                "",
+                                0,
+                                0,
+                            ));
+                            if let Err(error) = self.db.set_run_status(run_id, status) {
+                                tracing::error!(run_id, %error, "could not mark run failed");
+                            }
+                            emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                            json!({"agent": "notifier", "status": "failed", "error": message})
+                        }
+                    }
+                }
+            }
         };
-        emitter.emit("notifier_skipped", json!({"step": number}));
         let notify_status = notify_output["status"]
             .as_str()
             .unwrap_or("skipped")
@@ -702,10 +863,7 @@ impl Orchestrator {
                     error_message: Some(reason.clone()),
                     args: String::new(),
                 });
-                emitter.emit(
-                    "search_failed",
-                    json!({"query": query, "reason": reason}),
-                );
+                emitter.emit("search_failed", json!({"query": query, "reason": reason}));
                 json!({"query": query, "results": [], "note": NO_RESULTS_NOTE})
             }
             Ok(results) => {
@@ -733,9 +891,121 @@ impl Orchestrator {
     }
 }
 
+/// Telegram message shown to the operator, mirroring `_notification_text`.
+fn notification_text(
+    task: &str,
+    status: &str,
+    draft: &str,
+    verdict: Option<&str>,
+    issues: &[Value],
+    reason: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        format!("Sol-O run: {status}"),
+        format!("Task: {task}"),
+        format!("Checker verdict: {}", verdict.unwrap_or("n/a")),
+        String::new(),
+        "Draft:".to_string(),
+        if draft.is_empty() {
+            "(no draft)".to_string()
+        } else {
+            draft.to_string()
+        },
+    ];
+    if !issues.is_empty() {
+        lines.push(String::new());
+        lines.push("Issues:".to_string());
+        for issue in issues {
+            lines.push(format!(
+                "- {} ({})",
+                issue.get("problem").and_then(Value::as_str).unwrap_or(""),
+                issue.get("location").and_then(Value::as_str).unwrap_or(""),
+            ));
+        }
+    } else if let Some(reason) = reason {
+        lines.push(String::new());
+        lines.push(format!("Note: {reason}"));
+    }
+    redact(&lines.join("\n"))
+}
+
+/// Payload stored for a pending action, mirroring `_approval_payload`.
+fn approval_payload(
+    task: &str,
+    status: &str,
+    draft: &str,
+    verdict: Option<&str>,
+    issues: &[Value],
+    reason: Option<&str>,
+) -> Value {
+    json!({
+        "run_status": status,
+        "task": redact(task),
+        "draft": redact(draft),
+        "verdict": verdict,
+        "issues": issues,
+        "reason": reason.map(redact),
+        "message": notification_text(task, status, draft, verdict, issues, reason),
+    })
+}
+
+/// Send through the notifier and audit the tool call.
+fn send_telegram(
+    db: &Db,
+    run_id: &str,
+    text: &str,
+    timeout_seconds: f64,
+) -> Result<telegram::Delivery, TelegramError> {
+    let started_at = persistence::now_iso();
+    let started = Instant::now();
+    match telegram::send_message(text, timeout_seconds) {
+        Ok(delivery) => {
+            record_telegram_call(db, run_id, &started_at, started, "ok", None);
+            Ok(delivery)
+        }
+        Err(error) => {
+            record_telegram_call(
+                db,
+                run_id,
+                &started_at,
+                started,
+                "failed",
+                Some(error.message()),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn record_telegram_call(
+    db: &Db,
+    run_id: &str,
+    started_at: &str,
+    started: Instant,
+    status: &str,
+    error_message: Option<&str>,
+) {
+    let call = NewToolCall {
+        run_id: run_id.to_string(),
+        tool: "telegram".to_string(),
+        started_at: started_at.to_string(),
+        duration_ms: started.elapsed().as_millis() as i64,
+        status: status.to_string(),
+        error_message: error_message.map(str::to_string),
+        args: String::new(),
+    };
+    if let Err(error) = db.save_tool_call(&call) {
+        tracing::error!(run_id, %error, "could not write telegram tool_calls row");
+    }
+}
+
 fn resolved_model(settings: &Settings, agent: &str) -> String {
-    llm::model_for(settings, agent)
-        .unwrap_or_else(|| std::env::var("MODEL").unwrap_or_default().trim().to_string())
+    llm::model_for(settings, agent).unwrap_or_else(|| {
+        std::env::var("MODEL")
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    })
 }
 
 /// Original task + this step's instruction + every earlier validated output.
@@ -811,6 +1081,21 @@ fn final_verdict(outputs: &[StepResult]) -> Option<String> {
     None
 }
 
+fn final_issues(outputs: &[StepResult]) -> Vec<Value> {
+    for item in outputs.iter().rev() {
+        if item.agent == "checker" {
+            if let Some(issues) = item.output.get("issues").and_then(Value::as_array) {
+                return issues
+                    .iter()
+                    .filter(|issue| issue.is_object())
+                    .cloned()
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// One-line human summary for the planet label, capped like the reference.
 fn summary(agent: &str, output: &Value) -> String {
     for key in ["summary", "draft", "verdict", "status"] {
@@ -841,10 +1126,22 @@ mod tests {
 
     #[test]
     fn summaries_prefer_summary_then_draft_then_verdict() {
-        assert_eq!(summary("researcher", &json!({"summary": "  a   b "})), "a b");
-        assert_eq!(summary("writer", &json!({"draft": "the draft"})), "the draft");
-        assert_eq!(summary("checker", &json!({"verdict": "approved"})), "approved");
-        assert_eq!(summary("logger", &json!({"status": "complete"})), "complete");
+        assert_eq!(
+            summary("researcher", &json!({"summary": "  a   b "})),
+            "a b"
+        );
+        assert_eq!(
+            summary("writer", &json!({"draft": "the draft"})),
+            "the draft"
+        );
+        assert_eq!(
+            summary("checker", &json!({"verdict": "approved"})),
+            "approved"
+        );
+        assert_eq!(
+            summary("logger", &json!({"status": "complete"})),
+            "complete"
+        );
         assert_eq!(summary("notifier", &json!({})), "notifier finished");
     }
 

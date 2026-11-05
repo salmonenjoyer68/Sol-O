@@ -37,6 +37,7 @@ pub enum FailureType {
     SchemaMismatch,
     Timeout,
     LlmError,
+    ToolError,
 }
 
 impl FailureType {
@@ -46,6 +47,7 @@ impl FailureType {
             Self::SchemaMismatch => "schema_mismatch",
             Self::Timeout => "timeout",
             Self::LlmError => "llm_error",
+            Self::ToolError => "tool_error",
         }
     }
 }
