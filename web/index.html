@@ -347,10 +347,19 @@ function setSun(status, detail) {
   }[status] || "");
 }
 
+function feedLine(name, data, time) {
+  return {
+    time: time != null ? time : new Date().toLocaleTimeString([], { hour12: false }),
+    name,
+    text: summariseEvent(name, data),
+    agent: (data && data.agent) || "",
+    accent: data && data.agent ? styleFor(data.agent).color : null,
+    failed: /fail|error/i.test(name),
+  };
+}
+
 function pushLog(name, data) {
-  const time = new Date().toLocaleTimeString([], { hour12: false });
-  const text = summariseEvent(name, data);
-  state.log.push({ time, name, text, failed: /fail|error/i.test(name) });
+  state.log.push(feedLine(name, data));
   if (state.log.length > 8) state.log.shift();
   renderLog();
 }
@@ -384,6 +393,89 @@ function summariseEvent(name, data) {
   if (name === "search_done") return `${data.results} results`;
   return JSON.stringify(data).slice(0, 90);
 }
+
+/* ------------------------------------------------------------------ */
+/* View-model surface (pure; asserted from the browser console)        */
+/* ------------------------------------------------------------------ */
+
+const STATUS_BY_EVENT = {
+  agent_called: "Called",
+  agent_working: "Working",
+  agent_done: "Done",
+  agent_failed: "Failed",
+};
+
+function isPlannerEvent(data) {
+  return data.agent === "sun" || data.step === 0;
+}
+
+function plannedSteps(data) {
+  const steps = data.steps && data.steps.length
+    ? data.steps
+    : (data.agents || []).map((agent) => ({ agent, task: "" }));
+  return steps.filter((item) => item.agent !== "sun");
+}
+
+function rosterOf(records) {
+  const rows = new Map();
+  const counted = new Set();
+  let total = 0;
+  let completed = 0;
+  (records || []).forEach((record) => {
+    const name = record.event;
+    const data = record.data || {};
+    if (name === "plan_ready") {
+      const steps = plannedSteps(data);
+      rows.clear();
+      counted.clear();
+      total = steps.length;
+      completed = 0;
+      steps.forEach((item, index) => {
+        rows.set(`${index + 1}:${item.agent}`, {
+          step: index + 1,
+          agent: item.agent,
+          task: item.task || "",
+          status: "Idle",
+          accent: styleFor(item.agent).color,
+        });
+      });
+      return;
+    }
+    const status = STATUS_BY_EVENT[name];
+    if (!status || isPlannerEvent(data)) return;
+    const row = rows.get(`${data.step}:${data.agent}`) ||
+      [...rows.values()].find((item) => item.agent === data.agent);
+    if (!row) return;
+    if (name === "agent_done" && !counted.has(row.step)) {
+      counted.add(row.step);
+      completed += 1;
+    }
+    if (row.status !== "Failed") row.status = status;
+  });
+  return { rows: [...rows.values()], completed, total };
+}
+
+function recordTime(record) {
+  const stamp = Date.parse(record.ts);
+  return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString([], { hour12: false }) : "";
+}
+
+window.SolO = {
+  roster(records) {
+    return rosterOf(records).rows;
+  },
+  progress(records) {
+    const { completed, total } = rosterOf(records);
+    return { completed, total };
+  },
+  feed(records) {
+    return (records || []).map((record) =>
+      feedLine(record.event, record.data || {}, recordTime(record)));
+  },
+  accent(agent) {
+    return styleFor(String(agent)).color;
+  },
+};
 
 /* ------------------------------------------------------------------ */
 /* Planets                                                             */
@@ -500,7 +592,7 @@ function applyEvent(record) {
   const name = record.event;
   const data = record.data || {};
   if (record.run_id) state.runId = record.run_id;
-  const plannerEvent = data.agent === "sun" || data.step === 0;
+  const plannerEvent = isPlannerEvent(data);
 
   switch (name) {
     case "run_started": {
