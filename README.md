@@ -2,7 +2,7 @@
   <img src="img/logo/sol-o.svg" alt="Sol-O logo" width="320">
 </p>
 
-# Sol-O
+# Sol-O(Solar Orchestration)
 
 Automates customer inquiries: **researcher → writer → checker → logger → notifier** (Tavily search, SQLite audit log, Telegram delivery).
 
