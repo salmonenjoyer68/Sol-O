@@ -111,21 +111,38 @@
   .pill.failed { color: var(--bad); border-color: rgba(248,113,113,.55); }
   .pill.awaiting { color: var(--accent); border-color: rgba(255,211,107,.6); }
 
+  /* Activity feed: docked bottom-left, newest line at the bottom.
+     The width clears the centred command bar, so no overlay sits on it.
+     Below ~1270px the bar crowds it out; the mobile sheet (#20) owns that. */
   #log {
-    position: fixed; left: 16px; bottom: 16px; z-index: 18; width: min(430px, 46vw);
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 8px 10px; font-family: var(--font-mono);
-    font-size: 11.5px; line-height: 1.55; color: var(--muted);
-    backdrop-filter: blur(8px); max-height: 190px; overflow: hidden;
+    position: fixed; left: var(--space-2); bottom: var(--space-2); z-index: 18;
+    width: min(340px, calc(50vw - 396px)); max-height: 190px;
+    display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 6px 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
+    backdrop-filter: blur(8px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
   }
-  #log .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #log .line b { color: #c7d2fe; font-weight: 600; }
-  #log .line.failed b { color: var(--bad); }
-  #log .line.done b { color: var(--ok); }
+  #log-lines { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; min-height: 0; }
+  #log .line {
+    display: flex; align-items: baseline; gap: 6px;
+    padding-left: 6px; border-left: 2px solid transparent; border-radius: 3px;
+    color: var(--muted); white-space: nowrap;
+  }
+  #log .line time { flex: none; font-variant-numeric: tabular-nums; }
+  #log .line .dot {
+    flex: none; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--dot); box-shadow: 0 0 8px var(--dot);
+  }
+  /* Only the name carries the agent accent; the tail stays muted for contrast. */
+  #log .line .who { flex: none; font-weight: 600; color: var(--dot); }
+  #log .line .what { overflow: hidden; text-overflow: ellipsis; }
+  #log .line.failed { border-left-color: var(--bad); background: rgba(248, 113, 113, 0.1); }
+  #log .line.failed .what { color: #ffc9c9; }
+  #log .line.done { border-left-color: var(--ok); background: rgba(74, 222, 128, 0.07); }
+  #log .line.done .what { color: #c6f6d5; }
   #log .head {
     display: flex; justify-content: space-between; align-items: center;
-    color: #c7d2fe; letter-spacing: .12em; font-size: 9px; margin-bottom: 4px;
-    text-transform: uppercase;
+    color: #c7d2fe; letter-spacing: .12em; font-size: 10px; text-transform: uppercase;
   }
   #log .head button { height: 22px; padding: 0 8px; font-size: 12px; }
 
@@ -467,8 +484,11 @@
 </div>
 
 <div id="log">
-  <div class="head"><span>Event log</span><button id="log-toggle">HIDE</button></div>
-  <div id="log-lines"></div>
+  <div class="head">
+    <span id="log-title">Activity</span>
+    <button id="log-toggle" aria-controls="log-lines" aria-expanded="true">HIDE</button>
+  </div>
+  <div id="log-lines" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="log-title"></div>
 </div>
 
 <div id="approval" class="hidden" role="dialog" aria-modal="true" aria-label="Approval required">
@@ -687,7 +707,6 @@ const replayPause = document.getElementById("replay-pause");
 const replaySpeed = document.getElementById("replay-speed");
 const logLines = document.getElementById("log-lines");
 const logToggle = document.getElementById("log-toggle");
-const logBox = document.getElementById("log");
 const approvalBox = document.getElementById("approval");
 const approvalPreview = document.getElementById("approval-preview");
 const approveBtn = document.getElementById("approve");
@@ -770,15 +789,33 @@ function feedLine(name, data, time) {
 
 function pushLog(name, data) {
   state.log.push(feedLine(name, data));
-  if (state.log.length > 8) state.log.shift();
+  if (state.log.length > 40) {
+    state.log.shift();
+    // Mirror the trim in the DOM so renderLog only appends what is new.
+    if (logLines.firstElementChild) logLines.firstElementChild.remove();
+  }
   renderLog();
 }
 
+function logLineHtml(item) {
+  const done = !item.failed && /agent_done|all_done|approval_decided/.test(item.name) &&
+    !/fail|reject/i.test(item.text);
+  const who = item.agent || item.name;
+  const rest = item.agent ? `${item.name} · ${item.text}` : item.text;
+  return `<div class="line${item.failed ? " failed" : done ? " done" : ""}"` +
+    ` style="--dot:${item.accent || "#8b95b8"}">` +
+    `<time>${escapeHtml(item.time)}</time><i class="dot"></i>` +
+    `<span class="who">${escapeHtml(who)}</span>` +
+    `<span class="what">${escapeHtml(rest)}</span></div>`;
+}
+
 function renderLog() {
-  logLines.innerHTML = state.log.map((item) =>
-    `<div class="line ${item.failed ? "failed" : ""}">` +
-    `<b>${item.time}</b> ${escapeHtml(item.name)} · ${escapeHtml(item.text)}</div>`
-  ).join("");
+  // Append-only: rebuilding innerHTML would re-announce the whole feed.
+  while (logLines.childElementCount > state.log.length) logLines.firstElementChild.remove();
+  state.log.slice(logLines.childElementCount).forEach((item) =>
+    logLines.insertAdjacentHTML("beforeend", logLineHtml(item)));
+  // Newest line at the bottom; assigning scrollTop moves nothing else.
+  logLines.scrollTop = logLines.scrollHeight;
 }
 
 function summariseEvent(name, data) {
@@ -2151,10 +2188,9 @@ pill.addEventListener("click", () => {
   if (state.runId && state.lastResultStatus) showResult(state.lastResultStatus);
 });
 logToggle.addEventListener("click", () => {
-  const lines = document.getElementById("log-lines");
-  const hidden = lines.classList.toggle("hidden");
+  const hidden = logLines.classList.toggle("hidden");
   logToggle.textContent = hidden ? "SHOW" : "HIDE";
-  logBox.style.maxHeight = hidden ? "34px" : "190px";
+  logToggle.setAttribute("aria-expanded", String(!hidden));
 });
 
 /* Agent drawer: roster rows are the keyboard path to the canvas drawer. */
