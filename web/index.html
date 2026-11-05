@@ -44,19 +44,34 @@
 
   #topbar {
     position: fixed; top: var(--nav-h); left: 0; right: 0; height: 58px; z-index: 20;
-    display: flex; align-items: center; gap: 10px; padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px;
     background: linear-gradient(180deg, rgba(4,5,12,0.92), rgba(4,5,12,0.45));
     border-bottom: 1px solid var(--border);
     backdrop-filter: blur(8px);
   }
-  #topbar .brand {
-    font-weight: 800; letter-spacing: 0.28em; font-size: 12px; color: var(--accent);
-    text-shadow: 0 0 18px rgba(255, 196, 74, 0.45); white-space: nowrap;
+  #cmdbar {
+    position: fixed; left: 50%; bottom: var(--space-2); transform: translateX(-50%); z-index: 24;
+    width: min(760px, calc(100vw - 32px));
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "presets count" "task run";
+    gap: var(--space-1) 10px; align-items: center;
+    padding: 12px 14px; border-radius: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    backdrop-filter: blur(10px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+  #presets { grid-area: presets; display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+  #presets .chip {
+    height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px;
+    font-weight: 500; color: var(--muted); background: rgba(22, 27, 52, 0.6);
+  }
+  #plan-count {
+    grid-area: count; justify-self: end; font-family: var(--font-mono);
+    font-size: 11.5px; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap;
   }
   #task {
-    flex: 1; min-width: 140px; height: 34px; border-radius: 8px;
+    grid-area: task; width: 100%; height: 40px; border-radius: 10px;
     border: 1px solid var(--border); background: rgba(8, 10, 24, 0.85);
-    color: var(--fg); padding: 0 12px; font-size: 13px;
+    color: var(--fg); padding: 0 12px; font-size: 14px;
   }
   #task:focus { border-color: rgba(255, 211, 107, 0.55); box-shadow: 0 0 0 3px rgba(255, 211, 107, 0.1); }
   button {
@@ -67,7 +82,10 @@
   }
   button:hover { border-color: rgba(255, 211, 107, 0.5); background: rgba(35, 41, 76, 0.95); }
   button:active { transform: translateY(1px); }
-  #run { background: linear-gradient(180deg, #ffd36b, #f2a93b); color: #1a1203; border-color: transparent; }
+  #run {
+    grid-area: run; height: 40px; padding: 0 22px; font-size: 13px;
+    background: linear-gradient(180deg, #ffd36b, #f2a93b); color: #1a1203; border-color: transparent;
+  }
   #run:hover { filter: brightness(1.06); }
   select#replay {
     height: 34px; max-width: 250px; border-radius: 8px; border: 1px solid var(--border);
@@ -282,12 +300,20 @@
 </main>
 
 <div id="topbar">
-  <div class="brand">SOL-O</div>
-  <input id="task" autocomplete="off" spellcheck="false"
-         placeholder="Give the Sun a task…">
-  <button id="run">Run</button>
   <span id="pill" class="pill">IDLE</span>
   <select id="replay"><option value="">Replay a run…</option></select>
+</div>
+
+<div id="cmdbar" role="search" aria-label="Start a run">
+  <input id="task" autocomplete="off" spellcheck="false"
+         placeholder="Give the Sun a task…">
+  <div id="presets" role="group" aria-label="Scenario presets">
+    <button type="button" class="chip" data-task="Plan a three-day trip to Lisbon and write the itinerary.">Plan a trip</button>
+    <button type="button" class="chip" data-task="Review this function for bugs and summarise the issues.">Review code</button>
+    <button type="button" class="chip" data-task="Write a short report on what the team shipped this week.">Write a report</button>
+  </div>
+  <button id="run">Run</button>
+  <span id="plan-count" class="hidden" aria-live="polite"></span>
 </div>
 
 <div id="log">
@@ -479,6 +505,8 @@ function makeStars() {
 
 const taskInput = document.getElementById("task");
 const runButton = document.getElementById("run");
+const presets = document.getElementById("presets");
+const planCount = document.getElementById("plan-count");
 const pill = document.getElementById("pill");
 const replaySelect = document.getElementById("replay");
 const logLines = document.getElementById("log-lines");
@@ -538,6 +566,11 @@ function setSun(status, detail) {
     rejected: "failed",
     idle: "",
   }[status] || "");
+}
+
+function showPlanCount(count) {
+  planCount.textContent = `${count} agent${count === 1 ? "" : "s"} planned`;
+  planCount.classList.remove("hidden");
 }
 
 function feedLine(name, data, time) {
@@ -773,6 +806,7 @@ function resetScene() {
   approvalBox.classList.add("hidden");
   panel.classList.add("hidden");
   outputBox.classList.add("hidden");
+  planCount.classList.add("hidden");
   renderLog();
   setSun("idle", "");
 }
@@ -803,6 +837,7 @@ function applyEvent(record) {
       state.planets.clear();
       state.plans.forEach((plan) => planetFor(plan.step, plan.agent, true));
       setSun("planning", `${agents.length} planets planned`);
+      showPlanCount(agents.length);
       break;
     }
     case "agent_called": {
@@ -1666,6 +1701,12 @@ setInterval(() => {
 /* ------------------------------------------------------------------ */
 
 runButton.addEventListener("click", startRun);
+presets.addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-task]");
+  if (!chip) return;
+  taskInput.value = chip.dataset.task;
+  taskInput.focus();
+});
 taskInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") startRun();
 });
