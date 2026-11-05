@@ -456,10 +456,10 @@ fn one_run_accepts_then_completes_with_the_documented_events_and_rows() {
         assert_eq!(request.roles(), ["system", "user"]);
     }
     let researcher = std::fs::read_to_string(Path::new(ROOT).join("agents/researcher.md")).unwrap();
-    assert_eq!(
-        requests[0].contents()[0],
-        format!("{researcher}{}", sol_o::agents::STEP_CONTRACT)
-    );
+    let system = requests[0].contents()[0];
+    assert!(system.starts_with(&format!("{researcher}{}", sol_o::agents::STEP_CONTRACT)));
+    assert!(system.contains("## Tool envelope (runtime contract)"));
+    assert!(system.contains("at most 3 tool turns"));
     let first = requests[0].contents()[1];
     assert!(first.starts_with(&format!(
         "Original task:\n{TASK}\n\nYour step instruction:\n{TASK}\n\nOutputs from earlier agents (JSON):\n[]"

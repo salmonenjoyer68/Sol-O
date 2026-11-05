@@ -16,9 +16,10 @@ use crate::config::{Settings, ROOT};
 use crate::events::EventBus;
 use crate::llm;
 use crate::persistence::{self, Db, NewAgentCall, NewToolCall};
-use crate::reliability::{redact, truncate};
+use crate::reliability::{redact, truncate, Deadline};
 use crate::schemas::{self, step_schema};
 use crate::search::{SearchTool, TavilySearch};
+use crate::toolbox::{has_toolset, Toolset};
 
 pub const DEFAULT_PLAN: [&str; 3] = ["researcher", "writer", "checker"];
 pub const SYSTEM_STEPS: [&str; 2] = ["logger", "notifier"];
@@ -115,6 +116,7 @@ impl Orchestrator {
         // #30 adds the LLM planner; this ticket always plans hardcoded.
         let _ = use_llm_planner;
         let started = Instant::now();
+        let deadline = Deadline::new(self.settings.run_timeout_seconds);
         let handle = tokio::runtime::Handle::current();
         let emitter = Emitter {
             bus: &self.bus,
@@ -200,6 +202,19 @@ impl Orchestrator {
                 );
             };
 
+            let tool_emit = |event: &str, data: Value| emitter.emit(event, data);
+            let toolset = has_toolset(&step.agent).then(|| {
+                Toolset::new(
+                    &self.settings,
+                    &self.db,
+                    &tool_emit,
+                    &step.agent,
+                    number,
+                    run_id,
+                    source,
+                    deadline.clone(),
+                )
+            });
             let validated = agents::run_validated(
                 &self.settings,
                 &self.agents_dir,
@@ -208,6 +223,7 @@ impl Orchestrator {
                 STEP_CONTRACT,
                 &schema,
                 &parse,
+                toolset.as_ref(),
                 &mut on_attempt,
             );
 
@@ -222,7 +238,7 @@ impl Orchestrator {
                         started_at,
                         duration_ms: step_started.elapsed().as_millis() as i64,
                         attempts: error.attempts as i64,
-                        tool_turns: 0,
+                        tool_turns: error.tool_turns as i64,
                         status: "failed".to_string(),
                         error_type: Some(error_type.to_string()),
                         error_message: Some(error.detail.clone()),
@@ -240,7 +256,7 @@ impl Orchestrator {
                             "error_type": error_type,
                             "message": error.detail,
                             "attempts": error.attempts,
-                            "tool_turns": 0,
+                            "tool_turns": error.tool_turns,
                         }),
                     );
                     emitter.emit(
@@ -267,7 +283,7 @@ impl Orchestrator {
                 started_at,
                 duration_ms: step_started.elapsed().as_millis() as i64,
                 attempts: validated.attempts as i64,
-                tool_turns: 0,
+                tool_turns: validated.tool_turns as i64,
                 status: "ok".to_string(),
                 error_type: None,
                 error_message: None,
@@ -292,7 +308,7 @@ impl Orchestrator {
                 attempts: validated.attempts as i64,
                 duration_seconds,
                 output: validated.output,
-                tool_turns: 0,
+                tool_turns: validated.tool_turns as i64,
             });
             emitter.emit(
                 "agent_done",
@@ -301,7 +317,7 @@ impl Orchestrator {
                     "agent": step.agent,
                     "status": step_status,
                     "attempts": validated.attempts,
-                    "tool_turns": 0,
+                    "tool_turns": validated.tool_turns,
                     "duration_seconds": duration_seconds,
                     "summary": summary,
                 }),

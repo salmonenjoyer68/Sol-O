@@ -47,3 +47,7 @@ path = "rust-tests/run.rs"
 [[test]]
 name = "orchestrate"
 path = "rust-tests/orchestrate.rs"
+
+[[test]]
+name = "toolbox"
+path = "rust-tests/toolbox.rs"

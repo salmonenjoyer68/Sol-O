@@ -129,3 +129,23 @@ mod tests {
         assert!(cleaned["missing"].is_null());
     }
 }
+
+/// Whole-run time budget; `expired` gates tool execution like the reference.
+#[derive(Clone, Debug)]
+pub struct Deadline {
+    started: std::time::Instant,
+    seconds: f64,
+}
+
+impl Deadline {
+    pub fn new(seconds: f64) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            seconds,
+        }
+    }
+
+    pub fn expired(&self) -> bool {
+        self.started.elapsed().as_secs_f64() >= self.seconds
+    }
+}

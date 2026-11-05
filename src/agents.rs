@@ -14,7 +14,8 @@ use tracing::warn;
 use crate::config::Settings;
 use crate::llm::{self, Message};
 use crate::reliability::redact;
-use crate::schemas::{agent_output_schema, AgentOutput};
+use crate::schemas::{agent_output_schema, AgentOutput, ToolRequests};
+use crate::toolbox::{Toolset, TOOL_BUDGET_INSTRUCTION, TOOL_RESULTS_HEADER};
 
 /// Must match `app/agents.py` byte for byte.
 pub const OUTPUT_CONTRACT: &str = "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nIt must have these keys: agent, status, task, summary, findings, conflicts, gaps, clarification_needed.\n- status: \"complete\", \"partial\", or \"needs_clarification\".\n- findings: a list of objects with exactly claim, source_url, confidence.\n- confidence: \"high\", \"medium\", or \"low\".\n- conflicts and gaps: lists of strings (use [] when empty).\n- clarification_needed: null unless status is \"needs_clarification\".\nDo not add extra keys or enum values.\n";
@@ -56,6 +57,7 @@ pub struct AgentRunError {
     pub detail: String,
     pub raw: String,
     pub attempts: usize,
+    pub tool_turns: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +98,7 @@ pub struct ValidatedOutput {
     pub output: serde_json::Value,
     /// Validation attempts; the successful call counts.
     pub attempts: usize,
+    pub tool_turns: usize,
     pub duration_ms: i64,
 }
 
@@ -144,8 +147,9 @@ fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
 
 /// Call the provider, validate, and retry malformed output up to `LLM_MAX_RETRIES`.
 ///
-/// `on_attempt(call, attempt)` runs before every provider call. `parse` turns
-/// the decoded JSON into the normalized output object or a validation error.
+/// `on_attempt(call, attempt)` runs before every provider call. A tool envelope
+/// consumes a call but not a validation attempt; tools run for at most
+/// `max_tool_turns` turns per step.
 #[allow(clippy::too_many_arguments)]
 pub fn run_validated(
     settings: &Settings,
@@ -155,6 +159,7 @@ pub fn run_validated(
     contract: &str,
     schema: &serde_json::Value,
     parse: &dyn Fn(serde_json::Value) -> Result<serde_json::Value, ParseError>,
+    toolset: Option<&Toolset<'_>>,
     on_attempt: &mut dyn FnMut(usize, usize),
 ) -> Result<ValidatedOutput, RunError> {
     let started = Instant::now();
@@ -162,14 +167,25 @@ pub fn run_validated(
     let model_override = llm::model_for(settings, agent);
     let timeout = Duration::from_secs_f64(settings.llm_timeout_seconds.max(0.001));
     let max_attempts = 1 + settings.llm_max_retries.max(0) as usize;
+    let max_calls = max_attempts
+        + if toolset.is_some() {
+            settings.max_tool_turns.max(0) as usize
+        } else {
+            0
+        };
+    let tool_section = toolset.map(Toolset::contract).unwrap_or_default();
 
     let mut messages = vec![
-        Message::new("system", format!("{system_prompt}{contract}")),
+        Message::new("system", format!("{system_prompt}{contract}{tool_section}")),
         Message::new("user", user_content),
     ];
     let mut attempts = 0_usize;
-    loop {
-        on_attempt(attempts + 1, attempts + 1);
+    let mut tool_turns = 0_usize;
+    let mut calls = 0_usize;
+    while calls < max_calls {
+        calls += 1;
+        let validation_attempts = calls - tool_turns;
+        on_attempt(calls, attempts + 1);
         let raw = match llm::call_llm(
             settings,
             &messages,
@@ -187,43 +203,121 @@ pub fn run_validated(
                     failure_type,
                     detail: error.detail,
                     raw: String::new(),
-                    attempts: (attempts + 1).max(error.attempts),
+                    attempts: validation_attempts.max(error.attempts),
+                    tool_turns,
                 }));
             }
         };
-        match decode(&raw).and_then(|value| parse(value)) {
-            Ok(output) => {
-                return Ok(ValidatedOutput {
-                    output,
-                    attempts: attempts + 1,
-                    duration_ms: started.elapsed().as_millis() as i64,
-                })
-            }
-            Err(error) => {
-                attempts += 1;
-                if attempts >= max_attempts {
-                    return Err(RunError::Run(AgentRunError {
-                        failure_type: error.failure_type,
-                        detail: redact(&error.message),
-                        raw: redact(&raw),
-                        attempts,
-                    }));
+
+        let error: Option<ParseError>;
+        match decode(&raw) {
+            Err(failure) => error = Some(failure),
+            Ok(value) => {
+                let is_envelope = value
+                    .as_object()
+                    .is_some_and(|object| object.contains_key("tool_requests") && !object.contains_key("status"));
+                if !is_envelope {
+                    match parse(value) {
+                        Ok(output) => {
+                            return Ok(ValidatedOutput {
+                                output,
+                                attempts: validation_attempts,
+                                tool_turns,
+                                duration_ms: started.elapsed().as_millis() as i64,
+                            })
+                        }
+                        Err(failure) => error = Some(failure),
+                    }
+                } else if toolset.is_none() {
+                    error = Some(ParseError::new(
+                        FailureType::SchemaMismatch,
+                        "tool_requests is not available for this agent; return the normal output object",
+                    ));
+                } else {
+                    match serde_json::from_value::<ToolRequests>(value) {
+                        Err(failure) => {
+                            error = Some(ParseError::new(
+                                FailureType::SchemaMismatch,
+                                format!("invalid tool_requests: {failure}"),
+                            ))
+                        }
+                        Ok(requests)
+                            if requests.tool_requests.is_empty()
+                                || requests.tool_requests.iter().any(|request| request.tool.is_empty()) =>
+                        {
+                            error = Some(ParseError::new(
+                                FailureType::SchemaMismatch,
+                                "invalid tool_requests: tool and tool_requests must be non-empty",
+                            ))
+                        }
+                        Ok(requests) => {
+                            if tool_turns >= settings.max_tool_turns.max(0) as usize
+                                || calls >= max_calls
+                            {
+                                error = Some(ParseError::new(
+                                    FailureType::SchemaMismatch,
+                                    TOOL_BUDGET_INSTRUCTION,
+                                ));
+                            } else {
+                                tool_turns += 1;
+                                let results: Vec<serde_json::Value> = requests
+                                    .tool_requests
+                                    .iter()
+                                    .map(|request| {
+                                        toolset
+                                            .expect("toolset checked above")
+                                            .run(request)
+                                    })
+                                    .collect();
+                                messages.push(Message::new("assistant", raw));
+                                messages.push(Message::new(
+                                    "user",
+                                    format!(
+                                        "{TOOL_RESULTS_HEADER}{}",
+                                        serde_json::to_string_pretty(&results)
+                                            .expect("tool results serialize")
+                                    ),
+                                ));
+                                continue;
+                            }
+                        }
+                    }
                 }
-                warn!(
-                    attempt = attempts,
-                    max_attempts,
-                    kind = error.failure_type.as_str(),
-                    "invalid output: {}",
-                    error.message
-                );
-                messages.push(Message::new("assistant", raw));
-                messages.push(Message::new(
-                    "user",
-                    RETRY_INSTRUCTION.replace("{error}", &error.message),
-                ));
             }
         }
+
+        let error = error.expect("every branch sets an error or continues");
+        attempts += 1;
+        if attempts >= max_attempts || calls >= max_calls {
+            return Err(RunError::Run(AgentRunError {
+                failure_type: error.failure_type,
+                detail: redact(&error.message),
+                raw: redact(&raw),
+                attempts: validation_attempts,
+                tool_turns,
+            }));
+        }
+        warn!(
+            attempt = attempts,
+            max_attempts,
+            kind = error.failure_type.as_str(),
+            "invalid output: {}",
+            error.message
+        );
+        messages.push(Message::new("assistant", raw));
+        messages.push(Message::new(
+            "user",
+            RETRY_INSTRUCTION.replace("{error}", &error.message),
+        ));
     }
+
+    Err(RunError::Run(AgentRunError {
+        failure_type: FailureType::InvalidJson,
+        detail: format!("no usable output after {calls} LLM call(s)"),
+        raw: String::new(),
+        attempts: calls.saturating_sub(tool_turns),
+        tool_turns,
+    }))
 }
 
 /// `/run`: one file-backed agent validated against the full [`AgentOutput`] contract.
@@ -252,6 +346,7 @@ pub fn run_agent(
         OUTPUT_CONTRACT,
         &schema,
         &parse,
+        None,
         &mut |_, _| {},
     )?;
     let output = serde_json::from_value(validated.output)
