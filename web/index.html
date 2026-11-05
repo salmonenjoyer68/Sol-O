@@ -86,11 +86,13 @@
   }
   button:hover { border-color: rgba(255, 211, 107, 0.5); background: rgba(35, 41, 76, 0.95); }
   button:active { transform: translateY(1px); }
+  /* Glass CTA: gold text and border, never a solid gold fill. */
   #run {
     grid-area: run; height: 40px; padding: 0 22px; font-size: 13px;
-    background: linear-gradient(180deg, #ffd36b, #f2a93b); color: #1a1203; border-color: transparent;
+    background: rgba(255, 211, 107, 0.1); color: var(--accent);
+    border-color: rgba(255, 211, 107, 0.55);
   }
-  #run:hover { filter: brightness(1.06); }
+  #run:hover { background: rgba(255, 211, 107, 0.18); border-color: var(--accent); }
   select#replay {
     height: 34px; max-width: 250px; min-width: 0; border-radius: 8px; border: 1px solid var(--border);
     background: rgba(8, 10, 24, 0.85); color: var(--fg); font-size: 12px; padding: 0 8px;
@@ -312,10 +314,10 @@
   }
   #output .actions { display: flex; justify-content: flex-end; padding: 0 12px 12px; }
   #output .actions button {
-    height: 30px; background: linear-gradient(180deg, #ffd36b, #f2a93b);
-    color: #1a1203; border-color: transparent;
+    height: 30px; background: rgba(255, 211, 107, 0.1);
+    color: var(--accent); border-color: rgba(255, 211, 107, 0.55);
   }
-  #output .actions button:hover { background: linear-gradient(180deg, #ffd36b, #f2a93b); filter: brightness(1.06); }
+  #output .actions button:hover { background: rgba(255, 211, 107, 0.18); border-color: var(--accent); }
   @media (prefers-reduced-motion: reduce) {
     #output { animation: none; }
   }
@@ -449,8 +451,8 @@
     #sheet-toggle { flex: 1; min-width: 0; text-align: left; }
     #sheet .sheet-tabs { display: none; }
     #sheet.open .sheet-tabs { display: flex; gap: 6px; }
-    #sheet [role="tab"] { height: 30px; padding: 0 12px; }
-    #sheet [role="tab"][aria-selected="true"] {
+    #sheet .sheet-tabs button { height: 30px; padding: 0 12px; }
+    #sheet .sheet-tabs button[aria-pressed="true"] {
       border-color: rgba(255, 211, 107, 0.55); color: var(--accent);
     }
     #sheet:not(.open) #sheet-body { display: none; }
@@ -536,12 +538,12 @@
       <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
       <button id="replay-speed" type="button" aria-pressed="false" aria-label="Replay speed">1x</button>
     </div>
-    <select id="replay"><option value="">Replay a run…</option></select>
+    <select id="replay" aria-label="Replay a stored run"><option value="">Replay a run…</option></select>
   </div>
 </div>
 
 <div id="cmdbar" role="search" aria-label="Start a run">
-  <input id="task" autocomplete="off" spellcheck="false"
+  <input id="task" autocomplete="off" spellcheck="false" aria-label="Task"
          placeholder="Give the Sun a task…">
   <div id="presets" role="group" aria-label="Scenario presets">
     <button type="button" class="chip" data-task="Plan a three-day trip to Lisbon and write the itinerary.">Plan a trip</button>
@@ -554,7 +556,7 @@
 
 <div id="approval" class="hidden" role="dialog" aria-modal="true" aria-label="Approval required">
   <div class="card">
-    <div class="label">Approval required · nothing has been sent</div>
+    <div class="label" id="approval-label">Approval required · nothing has been sent</div>
     <div id="approval-preview"></div>
     <div class="row">
       <button id="reject">Reject</button>
@@ -585,9 +587,9 @@
 <div id="sheet" data-tab="roster">
   <div class="sheet-head">
     <button id="sheet-toggle" type="button" aria-expanded="false" aria-controls="sheet-body">Roster &amp; feed</button>
-    <div class="sheet-tabs" role="tablist" aria-label="Roster and activity">
-      <button id="tab-roster" type="button" role="tab" aria-selected="true" aria-controls="roster">Roster</button>
-      <button id="tab-feed" type="button" role="tab" aria-selected="false" aria-controls="log">Feed</button>
+    <div class="sheet-tabs" role="group" aria-label="Roster and activity">
+      <button id="tab-roster" type="button" aria-pressed="true" aria-controls="roster">Roster</button>
+      <button id="tab-feed" type="button" aria-pressed="false" aria-controls="log">Feed</button>
     </div>
   </div>
   <div id="sheet-body">
@@ -608,8 +610,8 @@
   </div>
 </div>
 
-<div id="output" class="hidden" role="region" aria-label="Run result">
-  <header><span id="output-title">Result</span><button id="output-close">×</button></header>
+<div id="output" class="hidden" role="dialog" aria-labelledby="output-title" tabindex="-1">
+  <header><span id="output-title">Result</span><button id="output-close" aria-label="Close result">×</button></header>
   <div id="output-meta"></div>
   <div id="output-body"></div>
   <div class="actions"><button id="output-replay">Replay</button></div>
@@ -699,11 +701,12 @@ motionPref.addEventListener("change", (event) => {
 const STYLES = {
   researcher: { color: "#43c6ff", size: 15, ring: false, moon: true },
   writer:     { color: "#ff9f43", size: 14, ring: true,  moon: false },
-  checker:    { color: "#4ade80", size: 10, ring: false, moon: true },
+  // Teal-green so a working checker never shares the success green.
+  checker:    { color: "#2dd4bf", size: 10, ring: false, moon: true },
   logger:     { color: "#a78bfa", size: 10, ring: false, moon: false },
   notifier:   { color: "#f472b6", size: 10, ring: true,  moon: false },
 };
-const FALLBACK = ["#60a5fa", "#fbbf24", "#34d399", "#f87171", "#c084fc", "#22d3ee", "#fb7185"];
+const FALLBACK = ["#60a5fa", "#818cf8", "#34d399", "#f87171", "#c084fc", "#22d3ee", "#fb7185"];
 
 function styleFor(agent) {
   if (STYLES[agent]) return STYLES[agent];
@@ -729,6 +732,7 @@ const state = {
   detail: "",
   plans: [],             // [{step, agent}]
   planets: new Map(),    // "step:agent" -> planet
+  ordered: [],           // planets sorted back-to-front, rebuilt once per frame
   alignPhase: null,      // in | hold | out
   alignStart: 0,
   alignAmount: 0,
@@ -789,6 +793,7 @@ const replaySpeed = document.getElementById("replay-speed");
 const logLines = document.getElementById("log-lines");
 const logToggle = document.getElementById("log-toggle");
 const approvalBox = document.getElementById("approval");
+const approvalLabel = document.getElementById("approval-label");
 const approvalPreview = document.getElementById("approval-preview");
 const approveBtn = document.getElementById("approve");
 const rejectBtn = document.getElementById("reject");
@@ -862,18 +867,19 @@ function showPlanCount(count) {
 }
 
 function feedLine(name, data, time) {
+  const ok = data && data.ok;
   return {
     time: time != null ? time : new Date().toLocaleTimeString([], { hour12: false }),
     name,
     text: summariseEvent(name, data),
     agent: (data && data.agent) || "",
     accent: data && data.agent ? styleFor(data.agent).color : null,
-    failed: /fail|error/i.test(name),
+    failed: /fail|error/i.test(name) || (name === "tool_done" && ok === false),
   };
 }
 
-function pushLog(name, data) {
-  state.log.push(feedLine(name, data));
+function pushLog(name, data, time) {
+  state.log.push(feedLine(name, data, time));
   if (state.log.length > 40) {
     state.log.shift();
     // Mirror the trim in the DOM so renderLog only appends what is new.
@@ -883,8 +889,9 @@ function pushLog(name, data) {
 }
 
 function logLineHtml(item) {
-  const done = !item.failed && /agent_done|all_done|approval_decided/.test(item.name) &&
-    !/fail|reject/i.test(item.text);
+  // Only genuine completion is a done line: partial/clarification all_done is neutral.
+  const done = !item.failed && (item.name === "agent_done" ||
+    (item.name === "all_done" && /^complete\b/i.test(item.text)));
   const who = item.agent || item.name;
   const rest = item.agent ? `${item.name} · ${item.text}` : item.text;
   return `<div class="line${item.failed ? " failed" : done ? " done" : ""}"` +
@@ -973,6 +980,13 @@ function rosterOf(records) {
       });
       return;
     }
+    // run_failed is the only event for orchestration-level failures: it names
+    // the agent in failed_at and has no step, so match the row by agent.
+    if (name === "run_failed") {
+      const row = [...rows.values()].find((item) => item.agent === data.failed_at);
+      if (row) row.status = "Failed";
+      return;
+    }
     const status = STATUS_BY_EVENT[name];
     if (!status || isPlannerEvent(data)) return;
     const row = rows.get(`${data.step}:${data.agent}`) ||
@@ -1029,6 +1043,10 @@ const AGENT_ROLE = {
 const ROSTER_FILL = { Idle: 0, Called: 25, Working: 60, Done: 100, Failed: 100 };
 
 function renderRoster() {
+  // The rows are rebuilt on every event; keep keyboard focus on the same row.
+  const focused = document.activeElement;
+  const rowEl = focused && focused.closest ? focused.closest("#roster-rows .row[data-agent]") : null;
+  const focusKey = rowEl ? { step: rowEl.dataset.step, agent: rowEl.dataset.agent } : null;
   const rows = window.SolO.roster(state.records);
   const { completed, total } = window.SolO.progress(state.records);
   rosterCount.textContent = total ? `${completed} / ${total} steps` : "";
@@ -1052,6 +1070,11 @@ function renderRoster() {
       `<div class="bar"><i style="width:${ROSTER_FILL[status]}%"></i></div>` +
       `</div></div>`;
   }).join("");
+  if (focusKey) {
+    const same = rosterRows.querySelector(
+      `.row[data-step="${focusKey.step}"][data-agent="${CSS.escape(focusKey.agent)}"]`);
+    if (same) same.focus();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1061,39 +1084,6 @@ function renderRoster() {
 function orbitRadius(index) {
   const span = Math.min(W, H * 1.7);
   return Math.max(70, span * 0.14 + index * span * 0.045);
-}
-
-function orbitPosition(p) {
-  const index = p.orbitIndex != null ? p.orbitIndex : state.planets.size;
-  const radius = orbitRadius(index);
-  return {
-    x: CX + Math.cos(p.angle) * radius,
-    y: CY + Math.sin(p.angle) * radius * 0.55,
-  };
-}
-
-function alignPosition(p) {
-  const finished = [...state.planets.values()].filter((item) => item.appear > 0.05);
-  finished.sort((a, b) => a.step - b.step);
-  const index = Math.max(0, finished.findIndex((item) => item.key === p.key));
-  // Alternate sides so no planet sits on top of the Sun, while staying on one line.
-  const spacing = Math.min(150, (W * 0.38) / Math.max(1, Math.ceil(finished.length / 2)));
-  const distance = (Math.floor(index / 2) + 1) * spacing;
-  const side = index % 2 === 0 ? 1 : -1;
-  return { x: CX + side * distance, y: CY };
-}
-
-function planetPosition(p) {
-  const base = orbitPosition(p);
-  if (state.alignAmount > 0.001) {
-    const target = alignPosition(p);
-    const amount = easeInOut(state.alignAmount);
-    return {
-      x: base.x + (target.x - base.x) * amount,
-      y: base.y + (target.y - base.y) * amount,
-    };
-  }
-  return base;
 }
 
 function planetFor(step, agent, placeholder) {
@@ -1144,7 +1134,7 @@ function resetScene() {
   state.alignPhase = null;
   state.alignAmount = 0;
   state.pulseAt = 0;
-  state.pending = null;
+  // state.pending is deliberately untouched: the gate closes only on approval_decided.
   state.outputs = null;
   state.outputsRun = null;
   state.detailData = null;
@@ -1156,14 +1146,27 @@ function resetScene() {
   state.extraPlanets = 0;
   state.log = [];
   state.records = [];
-  approvalBox.classList.add("hidden");
   panel.classList.add("hidden");
   outputBox.classList.add("hidden");
   setModal(false);
   planCount.classList.add("hidden");
   renderLog();
   renderRoster();
+  syncDecisionGate();
   setSun("idle", "");
+}
+
+/* The gate's decisions are live controls only for a live run. */
+let deciding = false;
+function syncDecisionGate() {
+  const replay = state.mode === "replay";
+  approveBtn.disabled = replay || deciding;
+  rejectBtn.disabled = replay || deciding;
+  approvalLabel.textContent = replay
+    ? "Stored pending action · replay is read-only · nothing will be sent"
+    : deciding
+      ? "Sending your decision…"
+      : "Approval required · nothing has been sent";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1190,6 +1193,7 @@ function applyEvent(record) {
       const agents = data.agents || (data.steps || []).map((item) => item.agent);
       state.plans = agents.map((agent, index) => ({ step: index + 1, agent }));
       state.planets.clear();
+      state.extraPlanets = 0;
       state.plans.forEach((plan) => planetFor(plan.step, plan.agent, true));
       setSun("planning", `${agents.length} planets planned`);
       showPlanCount(agents.length);
@@ -1243,13 +1247,15 @@ function applyEvent(record) {
       state.pending = { id: data.pending_id, preview: data.preview || "" };
       approvalPreview.textContent = data.preview || `Pending action #${data.pending_id}`;
       approvalBox.classList.remove("hidden");
-      approveBtn.focus();
+      // Never yank focus into a replay's read-only gate.
+      if (state.mode !== "replay") approveBtn.focus();
       setSun("awaiting", `pending #${data.pending_id}`);
       break;
     }
     case "approval_decided": {
       state.pending = null;
       approvalBox.classList.add("hidden");
+      refreshRuns();
       const runStatus = data.run_status || (data.decision === "approved" ? "complete" : "rejected");
       if (data.decision === "approved" && runStatus === "complete") {
         setSun("complete", "approved");
@@ -1307,9 +1313,10 @@ function applyEvent(record) {
     default:
       break;
   }
-  pushLog(name, data);
+  pushLog(name, data, recordTime(record) || undefined);
   state.records.push(record);
   renderRoster();
+  syncDecisionGate();
 }
 
 function markSkipped() {
@@ -1426,6 +1433,7 @@ function clearReplayTimers() {
   replayPlayer.index = 0;
   replayPlayer.paused = false;
   replayPlayer.remaining = 0;
+  replayPlayer.rate = 1;
   setReplayControls(false);
 }
 
@@ -1488,12 +1496,26 @@ function resumeReplay() {
 }
 
 function toggleReplayRate() {
-  replayPlayer.rate = replayPlayer.rate === 1 ? 2 : 1;
+  const next = replayPlayer.rate === 1 ? 2 : 1;
+  // Keep the wall-clock position of the pending gap, then re-arm it at the new speed.
+  const left = replayPlayer.timer
+    ? Math.max(0, replayPlayer.dueAt - performance.now())
+    : replayPlayer.remaining;
+  const scaled = (left * replayPlayer.rate) / next;
+  if (replayPlayer.timer) clearTimeout(replayPlayer.timer);
+  replayPlayer.timer = 0;
+  replayPlayer.rate = next;
+  if (replayPlayer.paused) replayPlayer.remaining = scaled;
+  else if (replayPlayer.records.length) scheduleReplayStep(scaled);
   syncReplayControls();
 }
 
+let replayToken = 0;
+
 async function replayRun(runId) {
   if (!runId) return;
+  const token = ++replayToken;
+  const stale = () => token !== replayToken || state.mode !== "replay";
   hideHero();
   clearReplayTimers();
   state.mode = "replay";
@@ -1505,8 +1527,10 @@ async function replayRun(runId) {
 
   try {
     const response = await fetch(`/runs/${runId}/events`);
+    if (stale()) return;
     if (!response.ok) throw new Error("could not load events");
     const records = await response.json();
+    if (stale()) return;
     if (!records.length) {
       pill.textContent = "REPLAY · EMPTY";
       return;
@@ -1515,6 +1539,7 @@ async function replayRun(runId) {
     setReplayControls(true);
     scheduleReplayStep(0);
   } catch (error) {
+    if (stale()) return;
     pill.textContent = "REPLAY · ERROR";
     pill.className = "pill failed";
     pushLog("error", { message: String(error.message || error) });
@@ -1522,8 +1547,10 @@ async function replayRun(runId) {
 }
 
 async function decide(kind) {
-  if (!state.pending) return;
+  if (!state.pending || state.mode === "replay" || deciding) return;
   const id = state.pending.id;
+  deciding = true;
+  syncDecisionGate();
   try {
     const response = await fetch(`/pending/${id}/${kind}`, { method: "POST" });
     const body = await response.json();
@@ -1531,6 +1558,9 @@ async function decide(kind) {
     pushLog(`approval_${kind}`, { pending_id: id, status: body.status });
   } catch (error) {
     pushLog("error", { message: String(error.message || error) });
+  } finally {
+    deciding = false;
+    syncDecisionGate();
   }
 }
 
@@ -1552,16 +1582,19 @@ async function refreshRuns() {
 
 async function loadRunDetail(force) {
   if (!state.runId) throw new Error("No run id yet.");
-  if (!force && state.detailData && state.detailRun === state.runId) {
+  const runId = state.runId;
+  if (!force && state.detailData && state.detailRun === runId) {
     return state.detailData;
   }
-  const response = await fetch(`/runs/${state.runId}`);
+  const response = await fetch(`/runs/${runId}`);
   if (!response.ok) throw new Error("run has not been saved yet");
   const detail = await response.json();
+  // Another run (or a replay) took over while this was in flight: don't cache it.
+  if (state.runId !== runId) return null;
   state.detailData = detail;
-  state.detailRun = state.runId;
+  state.detailRun = runId;
   state.outputs = (detail.run && detail.run.outputs) || [];
-  state.outputsRun = state.runId;
+  state.outputsRun = runId;
   return detail;
 }
 
@@ -1592,11 +1625,24 @@ function lastCheckerIssues(outputs) {
   return [];
 }
 
+let outputOpener = null;
+
+function closeOutput() {
+  outputBox.classList.add("hidden");
+  setModal(false);
+  const opener = outputOpener;
+  outputOpener = null;
+  if (opener && opener.isConnected) opener.focus();
+}
+
 async function showResult(status, data) {
   state.lastResultStatus = status;
   closeDrawer();
+  if (!outputBox.contains(document.activeElement)) outputOpener = document.activeElement;
   outputBox.classList.remove("hidden");
   setModal(true);
+  // A dialog only announces itself when it takes focus.
+  outputBox.focus();
   outputBody.textContent = "loading…";
   outputMeta.textContent = String(status).toUpperCase();
 
@@ -1604,7 +1650,7 @@ async function showResult(status, data) {
   let outputs = [];
   try {
     const detail = await loadRunDetail(true);
-    run = detail.run || null;
+    run = (detail && detail.run) || null;
     outputs = (run && run.outputs) || [];
   } catch (error) {
     /* fall back to what the event stream told us */
@@ -1618,8 +1664,8 @@ async function showResult(status, data) {
   outputMeta.textContent = bits.join(" · ");
 
   if (status === "complete") {
-    const done = [...state.planets.values()].filter((planet) => planet.done).length;
-    const count = done || state.plans.length;
+    // The plan's agent count, not the done planets: checker revisions add planets.
+    const count = state.plans.length;
     const elapsed = seconds != null ? ` · ${Math.round(seconds * 10) / 10}s` : "";
     outputTitle.textContent = `${count ? `All ${count} agents completed` : "Run completed"}${elapsed}`;
   } else {
@@ -1719,7 +1765,7 @@ async function loadDrawerOutput(step, agent, token) {
   }
   try {
     const detail = await loadRunDetail(!state.outputs || !state.outputs.length);
-    if (token !== drawerToken) return;
+    if (!detail || token !== drawerToken) return;
     const outputs = (detail.run && detail.run.outputs) || [];
     const found =
       outputs.find((item) => item.step === step && item.agent === agent) ||
@@ -1834,7 +1880,9 @@ function drawOrbitRings() {
 }
 
 function drawSun(now) {
-  const pulse = 0.5 + 0.5 * Math.sin(now * 0.0011);
+  // Freezing t freezes the corona pulse, the ray rotation and the ring alphas.
+  const t = reduceMotion ? 0 : now;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 0.0011);
   const core = 32 + pulse * 3;
 
   const corona = ctx.createRadialGradient(CX, CY, core * 0.4, CX, CY, core * 5.2);
@@ -1861,10 +1909,10 @@ function drawSun(now) {
 
   ctx.save();
   ctx.translate(CX, CY);
-  ctx.rotate(now * 0.00004);
+  ctx.rotate(t * 0.00004);
   for (let i = 0; i < 14; i += 1) {
     const angle = (i / 14) * TAU;
-    const length = core * (2.4 + 0.6 * Math.sin(now * 0.0007 + i));
+    const length = core * (2.4 + 0.6 * Math.sin(t * 0.0007 + i));
     ctx.strokeStyle = `rgba(255, 208, 120, ${0.05 + 0.04 * pulse})`;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
@@ -1913,10 +1961,10 @@ function drawSun(now) {
   ctx.textAlign = "left";
 }
 
-function drawBeam(planet, position, now) {
+function drawBeam(planet, x, y, now) {
   if (!planet.working) return;
-  const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + planet.step);
-  const gradient = ctx.createLinearGradient(CX, CY, position.x, position.y);
+  const pulse = 0.5 + 0.5 * Math.sin((reduceMotion ? 0 : now) * 0.004 + planet.step);
+  const gradient = ctx.createLinearGradient(CX, CY, x, y);
   gradient.addColorStop(0, `rgba(255, 216, 120, ${0.55 + 0.2 * pulse})`);
   gradient.addColorStop(1, `${planet.color}00`);
   ctx.save();
@@ -1926,17 +1974,17 @@ function drawBeam(planet, position, now) {
   ctx.shadowBlur = 12;
   ctx.beginPath();
   ctx.moveTo(CX, CY);
-  ctx.lineTo(position.x, position.y);
+  ctx.lineTo(x, y);
   ctx.stroke();
   ctx.restore();
 }
 
-function drawTrail(planet, position, now) {
+function drawTrail(planet, x, y, now) {
   if (reduceMotion) return;
   const age = now - planet.trailAt;
   if (!planet.trailAt || age > 850) return;
   const alpha = (1 - age / 850) * 0.55;
-  const gradient = ctx.createLinearGradient(CX, CY, position.x, position.y);
+  const gradient = ctx.createLinearGradient(CX, CY, x, y);
   gradient.addColorStop(0, `rgba(255, 226, 150, ${alpha * 0.2})`);
   gradient.addColorStop(1, `rgba(255, 226, 150, ${alpha})`);
   ctx.save();
@@ -1944,35 +1992,57 @@ function drawTrail(planet, position, now) {
   ctx.lineWidth = 2.2;
   ctx.beginPath();
   ctx.moveTo(CX, CY);
-  ctx.lineTo(position.x, position.y);
+  ctx.lineTo(x, y);
   ctx.stroke();
   ctx.restore();
 }
 
-function drawPlanet(planet, position, now) {
+function drawPlanet(planet, x, y, now) {
   const appear = easeOut(clamp(planet.appear, 0, 1));
   if (appear <= 0.01) return;
   const size = planet.size * (0.55 + 0.45 * appear);
-  const pulse = 0.5 + 0.5 * Math.sin(now * 0.005 + planet.step * 1.7);
+  // One frozen clock drives every decorative pulse, ring wobble and moon orbit.
+  const t = reduceMotion ? 0 : now;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 0.005 + planet.step * 1.7);
   const flicker = planet.failed && !reduceMotion ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
   const color = planet.failed ? "#ff5d5d" : planet.color;
   const glow = planet.working ? 26 + pulse * 18 : planet.done ? 14 : 9;
 
+  // Gradients live in local space, so they are built once per size/colour/mode
+  // and re-used under a translated transform instead of per frame.
+  const mode = planet.working ? "w" : "n";
+  if (planet.gradSize !== size || planet.gradColor !== color || planet.gradMode !== mode) {
+    planet.gradSize = size;
+    planet.gradColor = color;
+    planet.gradMode = mode;
+    const halo = ctx.createRadialGradient(0, 0, size * 0.3, 0, 0, size * 3.4);
+    halo.addColorStop(0, hexAlpha(color, planet.working ? 0.42 : 0.22));
+    halo.addColorStop(1, hexAlpha(color, 0));
+    planet.halo = halo;
+    const surface = ctx.createRadialGradient(
+      -size * 0.35, -size * 0.4, size * 0.1, 0, 0, size
+    );
+    surface.addColorStop(0, lighten(color, 0.45));
+    surface.addColorStop(0.55, color);
+    surface.addColorStop(1, darken(color, 0.45));
+    planet.surface = surface;
+  }
+
   ctx.save();
   ctx.globalAlpha = appear * flicker;
 
-  const halo = ctx.createRadialGradient(position.x, position.y, size * 0.3, position.x, position.y, size * 3.4);
-  halo.addColorStop(0, hexAlpha(color, planet.working ? 0.42 : 0.22));
-  halo.addColorStop(1, hexAlpha(color, 0));
-  ctx.fillStyle = halo;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = planet.halo;
   ctx.beginPath();
-  ctx.arc(position.x, position.y, size * 3.4, 0, TAU);
+  ctx.arc(0, 0, size * 3.4, 0, TAU);
   ctx.fill();
+  ctx.restore();
 
   if (planet.ring) {
     ctx.save();
-    ctx.translate(position.x, position.y);
-    ctx.rotate(-0.42 + Math.sin(now * 0.0004 + planet.step) * 0.05);
+    ctx.translate(x, y);
+    ctx.rotate(-0.42 + Math.sin(t * 0.0004 + planet.step) * 0.05);
     ctx.strokeStyle = hexAlpha(color, 0.5);
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -1982,25 +2052,19 @@ function drawPlanet(planet, position, now) {
   }
 
   ctx.save();
+  ctx.translate(x, y);
   ctx.shadowColor = color;
   ctx.shadowBlur = glow;
-  const surface = ctx.createRadialGradient(
-    position.x - size * 0.35, position.y - size * 0.4, size * 0.1,
-    position.x, position.y, size
-  );
-  surface.addColorStop(0, lighten(color, 0.45));
-  surface.addColorStop(0.55, color);
-  surface.addColorStop(1, darken(color, 0.45));
-  ctx.fillStyle = surface;
+  ctx.fillStyle = planet.surface;
   ctx.beginPath();
-  ctx.arc(position.x, position.y, size, 0, TAU);
+  ctx.arc(0, 0, size, 0, TAU);
   ctx.fill();
   ctx.restore();
 
   if (planet.moon) {
-    const moonAngle = planet.angle * 2.6 + now * 0.0006;
-    const moonX = position.x + Math.cos(moonAngle) * size * 2.1;
-    const moonY = position.y + Math.sin(moonAngle) * size * 1.2;
+    const moonAngle = planet.angle * 2.6 + t * 0.0006;
+    const moonX = x + Math.cos(moonAngle) * size * 2.1;
+    const moonY = y + Math.sin(moonAngle) * size * 1.2;
     ctx.fillStyle = "rgba(214, 224, 255, 0.75)";
     ctx.beginPath();
     ctx.arc(moonX, moonY, Math.max(1.2, size * 0.16), 0, TAU);
@@ -2011,14 +2075,14 @@ function drawPlanet(planet, position, now) {
     ctx.strokeStyle = `rgba(116, 255, 178, ${0.55 + 0.35 * pulse})`;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(position.x, position.y, size * 1.55, 0, TAU);
+    ctx.arc(x, y, size * 1.55, 0, TAU);
     ctx.stroke();
     ctx.strokeStyle = "#9ef7c1";
     ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(position.x + size * 1.3, position.y - size * 1.3);
-    ctx.lineTo(position.x + size * 1.6, position.y - size * 1.0);
-    ctx.lineTo(position.x + size * 2.1, position.y - size * 1.75);
+    ctx.moveTo(x + size * 1.3, y - size * 1.3);
+    ctx.lineTo(x + size * 1.6, y - size * 1.0);
+    ctx.lineTo(x + size * 2.1, y - size * 1.75);
     ctx.stroke();
   }
 
@@ -2027,10 +2091,10 @@ function drawPlanet(planet, position, now) {
     ctx.lineWidth = 2;
     const offset = size * 0.75;
     ctx.beginPath();
-    ctx.moveTo(position.x - offset, position.y - offset);
-    ctx.lineTo(position.x + offset, position.y + offset);
-    ctx.moveTo(position.x + offset, position.y - offset);
-    ctx.lineTo(position.x - offset, position.y + offset);
+    ctx.moveTo(x - offset, y - offset);
+    ctx.lineTo(x + offset, y + offset);
+    ctx.moveTo(x + offset, y - offset);
+    ctx.lineTo(x - offset, y + offset);
     ctx.stroke();
   }
 
@@ -2041,24 +2105,24 @@ function drawPlanet(planet, position, now) {
     ctx.fillStyle = "rgba(8, 10, 24, 0.85)";
     ctx.strokeStyle = hexAlpha(color, 0.7);
     ctx.lineWidth = 1;
-    roundRect(position.x - width / 2, position.y - size - 20, width, 14, 5);
+    roundRect(x - width / 2, y - size - 20, width, 14, 5);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = "#e8ecff";
     ctx.textAlign = "center";
-    ctx.fillText(label, position.x, position.y - size - 9.5);
+    ctx.fillText(label, x, y - size - 9.5);
     ctx.textAlign = "left";
   }
 
   ctx.fillStyle = "rgba(223, 231, 255, 0.86)";
   ctx.font = "600 12px 'Space Grotesk', system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(planet.agent, position.x, position.y + size + 15);
+  ctx.fillText(planet.agent, x, y + size + 15);
   ctx.textAlign = "left";
   ctx.restore();
 
-  planet.sx = position.x;
-  planet.sy = position.y;
+  planet.sx = x;
+  planet.sy = y;
 }
 
 function drawAlignmentFlash(now) {
@@ -2150,6 +2214,31 @@ function updateAnimation(now) {
       state.alignAmount = 0;
     }
   }
+
+  const list = [...state.planets.values()];
+  const amount = state.alignAmount > 0.001 ? easeInOut(state.alignAmount) : 0;
+  if (amount > 0) {
+    // Slots are computed once per frame, not once per lookup.
+    for (const planet of list) planet.alignX = null;
+    const finished = list.filter((planet) => planet.appear > 0.05).sort((a, b) => a.step - b.step);
+    const spacing = Math.min(150, (W * 0.38) / Math.max(1, Math.ceil(finished.length / 2)));
+    finished.forEach((planet, index) => {
+      planet.alignX = CX + (index % 2 === 0 ? 1 : -1) * (Math.floor(index / 2) + 1) * spacing;
+      planet.alignY = CY;
+    });
+  }
+
+  for (const planet of list) {
+    const index = planet.orbitIndex != null ? planet.orbitIndex : list.length;
+    const radius = orbitRadius(index);
+    const bx = CX + Math.cos(planet.angle) * radius;
+    const by = CY + Math.sin(planet.angle) * radius * 0.55;
+    planet.px = planet.alignX != null ? bx + (planet.alignX - bx) * amount : bx;
+    planet.py = planet.alignY != null ? by + (planet.alignY - by) * amount : by;
+    planet.depth = by;
+  }
+  list.sort((a, b) => a.depth - b.depth);
+  state.ordered = list;
 }
 
 function draw(now) {
@@ -2157,19 +2246,14 @@ function draw(now) {
   drawBackground(now);
   drawOrbitRings();
 
-  const ordered = [...state.planets.values()].sort((a, b) => {
-    const pa = orbitPosition(a);
-    const pb = orbitPosition(b);
-    return pa.y - pb.y;
-  });
-
-  ordered.forEach((planet) => {
-    drawTrail(planet, planetPosition(planet), now);
-    drawBeam(planet, planetPosition(planet), now);
-  });
+  const ordered = state.ordered;
+  for (const planet of ordered) {
+    drawTrail(planet, planet.px, planet.py, now);
+    drawBeam(planet, planet.px, planet.py, now);
+  }
 
   drawSun(now);
-  ordered.forEach((planet) => drawPlanet(planet, planetPosition(planet), now));
+  for (const planet of ordered) drawPlanet(planet, planet.px, planet.py, now);
   drawAlignmentFlash(now);
 }
 
@@ -2268,8 +2352,8 @@ function setSheet(open) {
 
 function setSheetTab(name) {
   sheet.dataset.tab = name;
-  tabRoster.setAttribute("aria-selected", String(name === "roster"));
-  tabFeed.setAttribute("aria-selected", String(name === "feed"));
+  tabRoster.setAttribute("aria-pressed", String(name === "roster"));
+  tabFeed.setAttribute("aria-pressed", String(name === "feed"));
 }
 
 /* Full-screen result or drawer on small screens; the chrome steps aside. */
@@ -2304,16 +2388,14 @@ rejectBtn.addEventListener("click", () => decide("reject"));
    instead of letting focus reach the controls the scrim blocks. */
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Tab" || approvalBox.classList.contains("hidden")) return;
+  if (approveBtn.disabled && rejectBtn.disabled) return;
   const items = [approveBtn, rejectBtn];
   const index = items.indexOf(document.activeElement);
   event.preventDefault();
   items[(index + (event.shiftKey ? items.length - 1 : 1)) % items.length].focus();
 });
 panelClose.addEventListener("click", closeDrawer);
-outputClose.addEventListener("click", () => {
-  outputBox.classList.add("hidden");
-  setModal(false);
-});
+outputClose.addEventListener("click", closeOutput);
 outputReplay.addEventListener("click", () => replayRun(state.runId));
 pill.addEventListener("click", () => {
   if (state.runId && state.lastResultStatus) showResult(state.lastResultStatus);
