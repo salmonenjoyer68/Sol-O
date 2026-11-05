@@ -1,24 +1,27 @@
 //! HTTP surface: the single-file UI, run history and the live SSE stream.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
+use crate::agents::{self, RunError};
 use crate::config::{Settings, ROOT};
 use crate::events::{sse_stream, EventBus};
 use crate::persistence::{Db, RunDetail, RunRow, SavedEvent};
 use crate::reliability::redact;
+use crate::schemas::{AgentOutput, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
@@ -53,6 +56,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/run", post(run))
         .route("/runs", get(runs))
         .route("/runs/{run_id}", get(run_detail))
         .route("/runs/{run_id}/events", get(run_events))
@@ -90,6 +94,71 @@ async fn index(State(state): State<AppState>) -> Result<Response, ApiError> {
         )
     })?;
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response())
+}
+
+/// Run one file-backed agent and return its validated JSON.
+async fn run(
+    State(state): State<AppState>,
+    payload: Result<Json<RunRequest>, JsonRejection>,
+) -> Result<Json<AgentOutput>, ApiError> {
+    let Json(request) = payload.map_err(unprocessable)?;
+    for (field, value) in [("agent", &request.agent), ("task", &request.task)] {
+        if value.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"detail": [{
+                    "type": "string_too_short",
+                    "loc": ["body", field],
+                    "msg": "String should have at least 1 character"
+                }]}),
+            ));
+        }
+    }
+    let settings = state.settings.clone();
+    let agents_dir = PathBuf::from(ROOT).join("agents");
+    match tokio::task::spawn_blocking(move || execute_run(&settings, &agents_dir, request)).await {
+        Ok(result) => result.map(Json),
+        Err(error) => Err(database_error(&format!("run task failed: {error}"))),
+    }
+}
+
+fn unprocessable(rejection: JsonRejection) -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({"detail": [{"type": "json_invalid", "loc": ["body"], "msg": rejection.body_text()}]}),
+    )
+}
+
+fn execute_run(
+    settings: &Settings,
+    agents_dir: &Path,
+    request: RunRequest,
+) -> Result<AgentOutput, ApiError> {
+    match agents::run_agent(settings, agents_dir, &request.agent, &request.task) {
+        Ok(outcome) => Ok(outcome.output),
+        Err(RunError::NotFound(agent)) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            json!({"error": "agent_not_found", "agent": agent}),
+        )),
+        Err(RunError::Unreadable(detail)) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": "agent_unreadable", "detail": detail}),
+        )),
+        Err(RunError::Run(error)) => Err(match error.failure_type {
+            agents::FailureType::Timeout => ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                json!({"error": "llm_timeout", "detail": error.detail}),
+            ),
+            agents::FailureType::LlmError => ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": "llm_error", "detail": error.detail}),
+            ),
+            _ => ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                json!({"error": "invalid_agent_output", "raw": error.raw}),
+            ),
+        }),
+    }
 }
 
 #[derive(Deserialize)]
@@ -215,7 +284,10 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::is_localhost_origin;
+    use super::{execute_run, is_localhost_origin};
+    use crate::config::Settings;
+    use crate::schemas::RunRequest;
+    use axum::http::StatusCode;
 
     #[test]
     fn cors_only_admits_localhost_origins() {
@@ -238,5 +310,24 @@ mod tests {
         ] {
             assert!(!is_localhost_origin(origin), "{origin} should be refused");
         }
+    }
+
+    #[test]
+    fn a_prompt_that_cannot_be_read_maps_to_agent_unreadable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // A directory where `broken.md` is expected: it exists but cannot be read.
+        std::fs::create_dir(dir.path().join("broken.md")).unwrap();
+        let request = RunRequest {
+            agent: "broken".to_string(),
+            task: "do it".to_string(),
+        };
+        let error = execute_run(&Settings::default(), dir.path(), request).unwrap_err();
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.body["error"], "agent_unreadable");
+        assert!(
+            error.body["detail"].as_str().unwrap().contains("broken.md"),
+            "detail {}",
+            error.body["detail"]
+        );
     }
 }
