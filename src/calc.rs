@@ -551,9 +551,13 @@ fn call_numeric(name: &str, arguments: Vec<Eval>) -> Result<Eval, String> {
                 Eval::Int(value) if digits.is_none() => Ok(Eval::Int(*value)),
                 Eval::Int(value) => {
                     let digits = digits.expect("digits are present");
-                    let factor = 10_f64.powi(digits.clamp(-308, 308) as i32);
-                    let rounded = (*value as f64 / factor).round() * factor;
-                    Ok(Eval::Float(rounded))
+                    if digits >= 0 {
+                        return Ok(Eval::Int(*value));
+                    }
+                    let factor = 10_i128.pow((-digits).min(38) as u32);
+                    let scaled = format!("{:.0}", *value as f64 / factor as f64);
+                    let whole: i128 = scaled.parse().unwrap_or(0);
+                    Ok(Eval::Int(whole * factor))
                 }
                 Eval::Float(value) if digits.is_none() => {
                     let rounded: i128 = format!("{value:.0}")
@@ -578,7 +582,12 @@ fn call_numeric(name: &str, arguments: Vec<Eval>) -> Result<Eval, String> {
                         .chars()
                         .map(|character| Eval::Text(character.to_string()))
                         .collect::<Vec<_>>(),
-                    other => vec![other.clone()],
+                    other => {
+                        return Err(format!(
+                            "'{}' object is not iterable",
+                            type_name(other)
+                        ))
+                    }
                 }
             } else {
                 arguments
@@ -685,6 +694,7 @@ fn repeat(text: &str, count: i128) -> String {
     if count <= 0 {
         String::new()
     } else {
+        // shortcut: repeat is bounded at 1M chars to cap memory; raise if huge repeats matter.
         text.repeat(count.min(1_000_000) as usize)
     }
 }
@@ -808,6 +818,9 @@ mod tests {
         assert_eq!(value("round(2.5)"), "2");
         assert_eq!(value("round(3.5)"), "4");
         assert_eq!(value("round(2.675, 2)"), "2.67");
+        assert_eq!(value("round(1234, 2)"), "1234");
+        assert_eq!(value("round(1234, -2)"), "1200");
+        assert_eq!(value("round(25, -1)"), "20");
         assert_eq!(value("min(3, 1, 2)"), "1");
         assert_eq!(value("max(3, 1, 2)"), "3");
         assert_eq!(value("min('abc')"), "a");
