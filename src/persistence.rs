@@ -12,11 +12,11 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::config::ROOT;
 use crate::reliability::{redact, redact_value, truncate};
 
-/// Stored raw model output and tool args are capped, like the reference.
-const MAX_RAW_CHARS: usize = 2000;
+/// Stored raw model output and tool args are capped, like `MAX_RAW_CHARS` in
+/// `app/reliability.py`.
+pub const MAX_RAW_CHARS: usize = 2000;
 
 pub type DbResult<T> = Result<T, String>;
 
@@ -92,28 +92,7 @@ pub fn now_iso() -> String {
 
 /// A v4 UUID as 32 lowercase hex characters, like `uuid4().hex`.
 pub fn new_run_id() -> String {
-    use std::io::Read;
-
-    let mut bytes = [0_u8; 16];
-    let mut source = std::fs::File::open("/dev/urandom").ok();
-    let filled = source
-        .as_mut()
-        .map(|file| file.read_exact(&mut bytes).is_ok())
-        .unwrap_or(false);
-    if !filled {
-        // No entropy device: fall back to a time-and-counter scramble.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = (nanos >> ((index % 8) * 8)) as u8 ^ (index as u8).wrapping_mul(37);
-        }
-    }
-    // Version 4, RFC 4122 variant.
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 #[derive(Clone, Debug)]
@@ -162,7 +141,7 @@ impl Db {
         let override_path = std::env::var("SOL_O_DB").unwrap_or_default();
         let override_path = override_path.trim();
         if override_path.is_empty() {
-            Self::new(Path::new(ROOT).join("data").join("sol-o.db"))
+            Self::new(crate::config::root().join("data").join("sol-o.db"))
         } else {
             Self::new(expand_home(override_path))
         }
@@ -490,7 +469,12 @@ impl Db {
     ) -> DbResult<Vec<RecallRunRow>> {
         let cleaned: Vec<String> = terms
             .iter()
-            .map(|term| term.to_lowercase().replace(['%', '_'], "").trim().to_string())
+            .map(|term| {
+                term.to_lowercase()
+                    .replace(['%', '_'], "")
+                    .trim()
+                    .to_string()
+            })
             .filter(|term| term.chars().count() >= 3)
             .collect();
         if source.is_empty() || cleaned.is_empty() {

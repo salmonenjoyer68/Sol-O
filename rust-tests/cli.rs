@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use support::fake_provider::{FakeProvider, Reply};
 use tempfile::TempDir;
 
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+use support::ROOT;
 const TASK: &str = "Explain online ordering for cafes.";
 
 fn command(database: &Path) -> Command {
@@ -141,6 +141,19 @@ fn pending_id(text: &str) -> i64 {
         .expect("numeric action id")
 }
 
+/// The stored payload of the newest pending action, as the operator can read it.
+fn pending_payload(database: &Path) -> Value {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let payload: String = connection
+        .query_row(
+            "SELECT payload_json FROM pending_actions ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&payload).expect("stored payload is JSON")
+}
+
 #[test]
 fn bare_invocation_prints_usage_and_fails_without_serving() {
     let dir = TempDir::new().unwrap();
@@ -176,6 +189,65 @@ fn run_prints_the_reference_result_and_exits_zero() {
     assert!(result["stopped_at"].is_null());
     assert!(result["failure"].is_null());
     assert!(result["duration_seconds"].is_number());
+}
+
+#[test]
+fn awaiting_approval_prints_the_pending_reason_and_stores_the_payload() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = happy_provider();
+    let output = cli(&database, &["run", TASK], &provider_args(&provider, &[]));
+
+    assert_eq!(output.status.code(), Some(4), "stderr: {}", stderr(&output));
+    let result = json_tail(&stdout(&output));
+    assert_eq!(result["status"], "awaiting_approval");
+    assert_eq!(result["stopped_at"], "notifier");
+    let reason = result["reason"].as_str().expect("reason is printed");
+    assert!(
+        reason.starts_with("awaiting human approval for pending action "),
+        "reason: {reason}"
+    );
+
+    // The payload is built before the awaiting reason exists, like the reference
+    // (`_approval_payload(reason=reason)`); it stores the field with no note.
+    let payload = pending_payload(&database);
+    assert_eq!(payload["run_status"], "complete");
+    assert!(payload.get("reason").is_some(), "reason field is stored");
+    assert!(payload["reason"].is_null());
+    assert!(!payload["message"].as_str().unwrap().contains("Note:"));
+}
+
+#[test]
+fn a_stop_reason_reaches_the_pending_payload_and_the_printed_result() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let clarification = json!({
+        "agent": "researcher",
+        "status": "needs_clarification",
+        "task": TASK,
+        "summary": "Need the city to check delivery.",
+        "findings": [],
+        "conflicts": [],
+        "gaps": [],
+        "clarification_needed": "Which city?"
+    })
+    .to_string();
+    let provider = FakeProvider::start(vec![Reply::content(clarification)]);
+    let output = cli(&database, &["run", TASK], &provider_args(&provider, &[]));
+
+    assert_eq!(output.status.code(), Some(4), "stderr: {}", stderr(&output));
+    let result = json_tail(&stdout(&output));
+    assert_eq!(result["status"], "awaiting_approval");
+    assert_eq!(result["stopped_at"], "researcher");
+    assert_eq!(result["reason"], "Which city?");
+
+    let payload = pending_payload(&database);
+    assert_eq!(payload["run_status"], "needs_clarification");
+    assert_eq!(payload["reason"], "Which city?");
+    assert!(payload["message"]
+        .as_str()
+        .unwrap()
+        .contains("Note: Which city?"));
 }
 
 #[test]

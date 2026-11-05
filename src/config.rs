@@ -4,18 +4,24 @@
 //! keeps working unchanged.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tracing::warn;
 
-/// Repository root, resolved at build time like the reference's `Path(__file__).parent.parent`.
-pub const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+/// Repository root: `SOL_O_ROOT` when set, else the process's working directory.
+/// `cargo run` and `cargo test` both start in the crate root, so the checkout
+/// layout keeps working; a copied binary serves the files beside where it runs.
+pub fn root() -> PathBuf {
+    std::env::var_os("SOL_O_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
 
 /// Prompt directory. `SOL_O_AGENTS_DIR` is a hermetic-test seam like `SOL_O_DB`.
 pub fn agents_dir() -> PathBuf {
     std::env::var_os("SOL_O_AGENTS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(ROOT).join("agents"))
+        .unwrap_or_else(|| root().join("agents"))
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +71,7 @@ pub fn load_settings() -> Settings {
 /// Agent ids that have a prompt file; those are the valid `AGENT_MODELS` keys.
 pub fn known_agents() -> HashSet<String> {
     let mut agents = HashSet::new();
-    let Ok(entries) = std::fs::read_dir(Path::new(ROOT).join("agents")) else {
+    let Ok(entries) = std::fs::read_dir(root().join("agents")) else {
         return agents;
     };
     for entry in entries.flatten() {

@@ -139,10 +139,7 @@ fn decode(raw: &str) -> Result<serde_json::Value, ParseError> {
         .map(|body| body.as_str().trim())
         .unwrap_or(text);
     serde_json::from_str(text).map_err(|error| {
-        ParseError::new(
-            FailureType::InvalidJson,
-            format!("invalid JSON: {error}"),
-        )
+        ParseError::new(FailureType::InvalidJson, format!("invalid JSON: {error}"))
     })
 }
 
@@ -231,9 +228,9 @@ pub fn run_validated(
         match decode(&raw) {
             Err(failure) => error = Some(failure),
             Ok(value) => {
-                let is_envelope = value
-                    .as_object()
-                    .is_some_and(|object| object.contains_key("tool_requests") && !object.contains_key("status"));
+                let is_envelope = value.as_object().is_some_and(|object| {
+                    object.contains_key("tool_requests") && !object.contains_key("status")
+                });
                 if !is_envelope {
                     match parse(value) {
                         Ok(output) => {
@@ -261,7 +258,10 @@ pub fn run_validated(
                         }
                         Ok(requests)
                             if requests.tool_requests.is_empty()
-                                || requests.tool_requests.iter().any(|request| request.tool.is_empty()) =>
+                                || requests
+                                    .tool_requests
+                                    .iter()
+                                    .any(|request| request.tool.is_empty()) =>
                         {
                             error = Some(ParseError::new(
                                 FailureType::SchemaMismatch,
@@ -282,9 +282,7 @@ pub fn run_validated(
                                     .tool_requests
                                     .iter()
                                     .map(|request| {
-                                        toolset
-                                            .expect("toolset checked above")
-                                            .run(request)
+                                        toolset.expect("toolset checked above").run(request)
                                     })
                                     .collect();
                                 messages.push(Message::new("assistant", raw));
@@ -380,7 +378,6 @@ pub fn run_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ROOT;
 
     #[test]
     fn contract_matches_the_reference_text() {
@@ -400,7 +397,7 @@ mod tests {
 
     #[test]
     fn unsafe_agent_names_are_unknown_agents() {
-        let agents_dir = Path::new(ROOT).join("agents");
+        let agents_dir = crate::config::root().join("agents");
         for name in ["../researcher", "researcher/../x", "", "a b"] {
             match load_system_prompt(&agents_dir, name) {
                 Err(RunError::NotFound(_)) => {}

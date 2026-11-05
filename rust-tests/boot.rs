@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+use support::ROOT;
 const RUN_KEYS: [&str; 10] = [
     "created_at",
     "duration_seconds",
@@ -35,18 +35,27 @@ struct Server {
 impl Server {
     /// Boot `sol-o serve` on an ephemeral port and wait for the address log line.
     fn start(database: &Path) -> Server {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sol-o"))
+        Server::start_at(Path::new(ROOT), database, &[])
+    }
+
+    /// Boot with an explicit working directory (the runtime root) and extra env.
+    fn start_at(root: &Path, database: &Path, envs: &[(&str, &str)]) -> Server {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sol-o"));
+        command
             .args(["serve", "--host", "127.0.0.1", "--port", "0"])
             .env_remove("API_KEY")
             .env_remove("BASE_URL")
             .env_remove("MODEL")
+            .env_remove("SOL_O_ROOT")
             .env("SOL_O_DB", database)
             .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
-            .current_dir(ROOT)
+            .current_dir(root)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sol-o serve");
+            .stderr(Stdio::piped());
+        for (name, value) in envs {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("spawn sol-o serve");
         let stderr = child.stderr.take().expect("stderr is piped");
         let mut stderr = BufReader::new(stderr);
         let pattern = Regex::new(r"address=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+)").unwrap();
@@ -91,6 +100,33 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn resolves_its_root_at_runtime_not_at_build_time() {
+    let root = TempDir::new().unwrap();
+    std::fs::create_dir_all(root.path().join("web")).unwrap();
+    std::fs::write(root.path().join("web/index.html"), "<p>runtime root</p>").unwrap();
+
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let server = Server::start_at(root.path(), &database, &[]);
+    assert_eq!(
+        server.get("/").text().unwrap(),
+        "<p>runtime root</p>",
+        "the binary serves web/index.html from its working directory"
+    );
+
+    // `SOL_O_ROOT` wins over the working directory.
+    let elsewhere = TempDir::new().unwrap();
+    let database = dir.path().join("override.db");
+    let root_text = root.path().to_str().unwrap();
+    let server = Server::start_at(elsewhere.path(), &database, &[("SOL_O_ROOT", root_text)]);
+    assert_eq!(
+        server.get("/").text().unwrap(),
+        "<p>runtime root</p>",
+        "SOL_O_ROOT overrides the working directory"
+    );
 }
 
 #[test]

@@ -6,138 +6,14 @@ mod support;
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::{Child, ChildStderr, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use regex::Regex;
 use serde_json::{json, Value};
 use support::fake_provider::{FakeProvider, Reply};
+use support::{Server, ROOT};
 use tempfile::TempDir;
 
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const TASK: &str = "Explain online ordering for cafes.";
-
-struct Server {
-    child: Child,
-    _stderr: BufReader<ChildStderr>,
-    base: String,
-}
-
-impl Server {
-    fn start(database: &Path, envs: &[(&str, &str)]) -> Server {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_sol-o"));
-        command.args(["serve", "--host", "127.0.0.1", "--port", "0"]);
-        for name in [
-            "API_KEY",
-            "BASE_URL",
-            "MODEL",
-            "AGENT_MODELS",
-            "LLM_MAX_RETRIES",
-            "LLM_TIMEOUT_SECONDS",
-            "RUN_TIMEOUT_SECONDS",
-            "MAX_INPUT_CHARS",
-            "TAVILY_API_KEY",
-            "SOL_O_TAVILY_ENDPOINT",
-            "REQUIRE_APPROVAL",
-            "AUTO_APPROVE",
-            "PENDING_TTL_HOURS",
-            "DRY_RUN",
-            "TELEGRAM_BOT_TOKEN",
-            "TELEGRAM_CHAT_ID",
-            "SOL_O_TELEGRAM_ENDPOINT",
-        ] {
-            command.env_remove(name);
-        }
-        command
-            .env("SOL_O_DB", database)
-            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
-            .current_dir(ROOT);
-        for (name, value) in envs {
-            command.env(name, value);
-        }
-        let mut child = command
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sol-o serve");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let mut stderr = BufReader::new(stderr);
-        let pattern = Regex::new(r"address=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+)").unwrap();
-        let address = loop {
-            let mut line = String::new();
-            let read = stderr.read_line(&mut line).expect("read server stderr");
-            assert!(read > 0, "server exited before logging its bound address");
-            if let Some(captures) = pattern.captures(&line) {
-                break captures[1].to_string();
-            }
-        };
-        Server {
-            child,
-            _stderr: stderr,
-            base: format!("http://{address}"),
-        }
-    }
-
-    fn client() -> reqwest::blocking::Client {
-        reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("http client")
-    }
-
-    fn post(&self, path: &str, body: &Value) -> reqwest::blocking::Response {
-        Self::client()
-            .post(format!("{}{path}", self.base))
-            .json(body)
-            .send()
-            .expect("POST")
-    }
-
-    fn get(&self, path: &str) -> reqwest::blocking::Response {
-        Self::client()
-            .get(format!("{}{path}", self.base))
-            .send()
-            .expect("GET")
-    }
-
-    /// Poll saved events until `name` appears; the logger saves the run row
-    /// before the notifier step finishes, so status alone is not a barrier.
-    fn wait_for_event(&self, run_id: &str, name: &str) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let saved: Vec<Value> = self
-                .get(&format!("/runs/{run_id}/events"))
-                .json()
-                .expect("saved events");
-            if saved.iter().any(|event| event["event"] == name) || Instant::now() > deadline {
-                return saved;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn wait_for_run(&self, run_id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let response = self.get(&format!("/runs/{run_id}"));
-            assert_eq!(response.status(), 200, "run detail");
-            let detail: Value = response.json().unwrap();
-            let status = detail["run"]["status"].as_str().unwrap_or_default();
-            if status != "running" {
-                return detail;
-            }
-            assert!(Instant::now() < deadline, "run stayed running: {detail}");
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 /// A loopback Tavily stand-in: fixed results, no network.
 struct FakeTavily {
@@ -666,7 +542,9 @@ fn inbound_accepts_with_202_and_runs_the_same_plan() {
 fn a_clarification_stops_the_run_before_any_later_planet() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
-    let provider = FakeProvider::start(vec![Reply::content(researcher_clarification("Which city?"))]);
+    let provider = FakeProvider::start(vec![Reply::content(researcher_clarification(
+        "Which city?",
+    ))]);
     let server = start_server(&database, &provider, &[]);
 
     let accepted: Value = server
@@ -678,7 +556,11 @@ fn a_clarification_stops_the_run_before_any_later_planet() {
 
     assert_eq!(detail["run"]["status"], "needs_clarification");
     assert_eq!(detail["run"]["outputs"].as_array().unwrap().len(), 1);
-    assert_eq!(provider.requests().len(), 1, "no later planet may be called");
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "no later planet may be called"
+    );
 
     let saved = server.wait_for_event(run_id, "all_done");
     let events: Vec<&str> = saved
@@ -716,7 +598,10 @@ fn a_clarification_stops_the_run_before_any_later_planet() {
         })
     );
     assert_eq!(saved[6]["data"]["status"], "needs_clarification");
-    assert_eq!(saved[13]["data"], json!({"step": 3, "dry_run": true, "delivered": false, "parts": 1}));
+    assert_eq!(
+        saved[13]["data"],
+        json!({"step": 3, "dry_run": true, "delivered": false, "parts": 1})
+    );
     assert_eq!(saved[15]["data"]["status"], "needs_clarification");
     assert_eq!(saved[15]["data"]["steps"], 3);
 }
@@ -747,7 +632,11 @@ fn exhausted_validation_attempts_fail_the_run_and_truncate_the_audit() {
     let outputs = detail["run"]["outputs"].as_array().unwrap();
     assert_eq!(outputs.len(), 1, "earlier outputs survive the failure");
     assert_eq!(outputs[0]["agent"], "researcher");
-    assert_eq!(provider.requests().len(), 4, "three writer attempts, no later step");
+    assert_eq!(
+        provider.requests().len(),
+        4,
+        "three writer attempts, no later step"
+    );
 
     let saved = server.wait_for_event(run_id, "run_failed");
     let events: Vec<&str> = saved
@@ -808,7 +697,11 @@ fn exhausted_validation_attempts_fail_the_run_and_truncate_the_audit() {
     assert_eq!(writer["tool_turns"], 0);
     assert_eq!(writer["output_chars"], 5000);
     let stored_raw = writer["raw_output"].as_str().unwrap();
-    assert_eq!(stored_raw, "x".repeat(2000), "raw output capped at 2000 chars");
+    assert_eq!(
+        stored_raw,
+        "x".repeat(2000),
+        "raw output capped at 2000 chars"
+    );
     assert!(writer["error_message"]
         .as_str()
         .unwrap()
@@ -869,7 +762,11 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
     assert_eq!(detail["run"]["status"], "partial");
     assert_eq!(detail["run"]["final_draft"], "Revised draft.");
     assert_eq!(detail["run"]["verdict"], "needs_changes");
-    assert_eq!(provider.requests().len(), 5, "one writer revision and one rerun");
+    assert_eq!(
+        provider.requests().len(),
+        5,
+        "one writer revision and one rerun"
+    );
     assert_eq!(detail["agent_calls"].as_array().unwrap().len(), 5);
 
     let outputs = detail["run"]["outputs"].as_array().unwrap();
@@ -886,8 +783,7 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
         "Re-review the revised writer draft against the researcher findings and confirm whether every previously reported issue is fixed."
     );
     assert_eq!(
-        outputs[4]["output"]["issues"],
-        second_issues,
+        outputs[4]["output"]["issues"], second_issues,
         "the second rejection's issues are preserved"
     );
     assert_eq!(outputs[4]["output"]["verdict"], "needs_changes");
@@ -938,10 +834,7 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
             .count(),
         1
     );
-    assert_eq!(
-        saved[13]["data"],
-        json!({"step": 3, "issues": 2})
-    );
+    assert_eq!(saved[13]["data"], json!({"step": 3, "issues": 2}));
     assert_eq!(
         saved[20]["data"],
         json!({
@@ -962,9 +855,8 @@ fn a_checker_rejection_buys_one_revision_and_a_second_rejection_ends_partial() {
         "Your step instruction:\nRevise your draft so it resolves every issue the checker reported."
     ));
     assert!(revision_message.contains("\"problem\": \"First problem\""));
-    assert!(requests[4].contents()[1].contains(
-        "Your step instruction:\nRe-review the revised writer draft"
-    ));
+    assert!(requests[4].contents()[1]
+        .contains("Your step instruction:\nRe-review the revised writer draft"));
 }
 
 #[test]
@@ -972,7 +864,7 @@ fn each_call_is_bounded_by_the_remaining_run_budget() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
     let provider = FakeProvider::start(vec![
-        Reply::content(researcher_output()).delayed(Duration::from_secs(10)),
+        Reply::content(researcher_output()).delayed(Duration::from_secs(10))
     ]);
     let server = start_server(
         &database,
@@ -1149,9 +1041,8 @@ fn an_over_long_task_is_truncated_and_the_warning_is_stored() {
     let saved = server.wait_for_event(run_id, "all_done");
     assert_eq!(saved[0]["data"]["task"], "abcdefghij");
     assert_eq!(saved[1]["data"]["steps"][0]["task"], "abcdefghij");
-    assert!(provider.requests()[0].contents()[1].starts_with(
-        "Original task:\nabcdefghij\n\nYour step instruction:\nabcdefghij\n"
-    ));
+    assert!(provider.requests()[0].contents()[1]
+        .starts_with("Original task:\nabcdefghij\n\nYour step instruction:\nabcdefghij\n"));
 }
 
 #[test]

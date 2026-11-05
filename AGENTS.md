@@ -11,8 +11,11 @@ anything the Rust backend runs.
 ## Setup
 
 - Rust stable, edition 2021. No virtualenv, no Python and no Node are needed to build, test
-  or run the backend. Run commands from the repo root: `ROOT` is baked in at build time and
-  `agents/`, `kb/` and `web/` resolve under it.
+  or run the backend. The root — where `agents/`, `kb/`, `web/`, `data/` and `.env` live —
+  is resolved at runtime: `SOL_O_ROOT` overrides it, otherwise the process's current
+  directory is used. `cargo run` and `cargo test` start in the repo root, so the checkout
+  layout works unchanged; point `SOL_O_ROOT` at a directory to run a copied binary against
+  its own files.
 - `cp .env.example .env` and fill `BASE_URL`, `API_KEY`, `MODEL`. Tools want
   `TAVILY_API_KEY` and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`; `DRY_RUN` defaults to true.
 - The binary loads `.env` once at startup (`dotenvy`, from the repo root). `SOL_O_ENV_FILE`
@@ -29,12 +32,13 @@ anything the Rust backend runs.
 - Inspect: `cargo run -- show <run_id>`, `cargo run -- pending`,
   `cargo run -- approve <id>`, `cargo run -- reject <id>`.
 - Tests: `cargo test`. Unit tests live in `#[cfg(test)]` modules beside the code;
-  `rust-tests/*.rs` are black-box suites that spawn the real binary against
-  `rust-tests/support/fake_provider.rs` (a scripted OpenAI-compatible provider). Fixtures are
-  in `rust-tests/fixtures/`.
-- Format: `cargo fmt` (optional lint: `cargo clippy --all-targets`). The tree is not
-  rustfmt-clean yet, so format only the files you touch. There is no CI, pre-commit, Makefile
-  or tox; do not assume a pipeline exists.
+  `rust-tests/*.rs` are integration suites. Most spawn the real binary against
+  `rust-tests/support/fake_provider.rs` (a scripted OpenAI-compatible provider), sharing
+  `rust-tests/support/`. Two are unit-level: `stream.rs` builds the router in-process
+  (keepalive timing is not a binary setting) and `tools.rs` calls the handlers directly.
+  Fixtures are in `rust-tests/fixtures/`.
+- Format: `cargo fmt` (optional lint: `cargo clippy --all-targets`); `cargo fmt --check`
+  is clean. There is no CI, pre-commit, Makefile or tox; do not assume a pipeline exists.
 
 ## Layout
 

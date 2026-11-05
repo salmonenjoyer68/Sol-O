@@ -17,7 +17,8 @@ use crate::recall::recall;
 use crate::reliability::{redact, Deadline};
 use crate::schemas::ToolRequest;
 
-pub const TOOL_BUDGET_INSTRUCTION: &str = "Tool budget is exhausted. Return your normal output object now; no more tools will run.";
+pub const TOOL_BUDGET_INSTRUCTION: &str =
+    "Tool budget is exhausted. Return your normal output object now; no more tools will run.";
 pub const TOOL_RESULTS_HEADER: &str = "Tool results (JSON):\n";
 
 const CONTRACT_TEMPLATE: &str = "
@@ -146,7 +147,7 @@ pub fn agent_tool_names(agent: &str) -> &'static [&'static str] {
 }
 
 pub fn has_toolset(agent: &str) -> bool {
-    matches!(agent, "researcher" | "writer" | "checker")
+    !agent_tool_names(agent).is_empty()
 }
 
 fn allowed_tools(agent: &str) -> Vec<&'static Tool> {
@@ -159,8 +160,7 @@ fn allowed_tools(agent: &str) -> Vec<&'static Tool> {
 /// `json.dumps(value, ensure_ascii=False, default=str)` separators.
 fn python_json(value: &Value) -> String {
     let mut buffer = Vec::new();
-    let mut serializer =
-        serde_json::Serializer::with_formatter(&mut buffer, PythonFormatter);
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buffer, PythonFormatter);
     value
         .serialize(&mut serializer)
         .expect("JSON values always serialize");
@@ -297,7 +297,8 @@ fn shrink(
     make: &dyn Fn(Value, bool) -> Value,
     max_result_chars: usize,
 ) -> Option<Value> {
-    let fits = |candidate: Value| char_len(&python_json(&make(candidate, true))) <= max_result_chars;
+    let fits =
+        |candidate: Value| char_len(&python_json(&make(candidate, true))) <= max_result_chars;
     match value {
         Value::String(text) => clip(&text, |candidate| {
             fits(Value::String(candidate.to_string()))
@@ -312,8 +313,12 @@ fn shrink(
                 return None;
             }
             let item = items.pop().expect("one item remains");
-            shrink(item, &|candidate: Value, _capped: bool| make(Value::Array(vec![candidate]), true), max_result_chars)
-                .map(|shrunk| Value::Array(vec![shrunk]))
+            shrink(
+                item,
+                &|candidate: Value, _capped: bool| make(Value::Array(vec![candidate]), true),
+                max_result_chars,
+            )
+            .map(|shrunk| Value::Array(vec![shrunk]))
         }
         Value::Object(mut object) => {
             let key = longest_text_key(&object)?;
@@ -349,12 +354,10 @@ fn clamp_limit(args: Map<String, Value>, max_result_items: i64) -> Map<String, V
         return args;
     };
     let parsed = match requested {
-        Value::Number(number) => number.as_i64().or_else(|| {
-            number
-                .as_f64()
-                .filter(|value| value.fract() == 0.0)
-                .map(|value| value as i64)
-        }),
+        // `int(2.9) == 2`: the reference truncates, it does not skip fractions.
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value.trunc() as i64)),
         Value::String(text) => text.trim().parse::<i64>().ok(),
         _ => None,
     };
@@ -362,7 +365,7 @@ fn clamp_limit(args: Map<String, Value>, max_result_items: i64) -> Map<String, V
         return args;
     };
     let clamped = parsed.clamp(1, max_result_items.max(1));
-    if matches!(requested, Value::Number(number) if number.as_i64() == Some(clamped)) {
+    if matches!(requested, Value::Number(number) if number.as_f64() == Some(clamped as f64)) {
         return args;
     }
     let mut next = args;
@@ -438,7 +441,10 @@ impl<'a> Toolset<'a> {
         );
 
         let outcome = self.execute(&name, &args);
-        let error = outcome.get("error").and_then(Value::as_str).map(str::to_string);
+        let error = outcome
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let duration_ms = started.elapsed().as_millis() as i64;
         let args_text: String = python_json(&Value::Object(args))
             .chars()
@@ -474,9 +480,8 @@ impl<'a> Toolset<'a> {
     }
 
     fn execute(&self, name: &str, args: &Map<String, Value>) -> Value {
-        let failure = |error: String| {
-            serde_json::json!({"tool": name, "ok": false, "error": error})
-        };
+        let failure =
+            |error: String| serde_json::json!({"tool": name, "ok": false, "error": error});
         let Some(tool) = self.tools.iter().find(|tool| tool.name == name) else {
             return failure(format!("tool not allowed: {name}"));
         };
@@ -548,14 +553,24 @@ mod tests {
         let items: Vec<Value> = (0..10)
             .map(|index| json!({"path": "kb/delivery.md", "text": format!("item-{index} {}", "y".repeat(80))}))
             .collect();
-        let payload = fit(envelope("kb_search", true, Value::Array(items.clone())), 320);
+        let payload = fit(
+            envelope("kb_search", true, Value::Array(items.clone())),
+            320,
+        );
         assert_eq!(payload["truncated"], true);
         let kept = payload["result"].as_array().unwrap();
         assert!(kept.len() < items.len());
         assert_eq!(kept[0], items[0]);
         assert!(char_len(&python_json(&payload)) <= 320);
 
-        let single = fit(envelope("kb_search", true, json!(["first item ".to_string() + &"z".repeat(800)])), 220);
+        let single = fit(
+            envelope(
+                "kb_search",
+                true,
+                json!(["first item ".to_string() + &"z".repeat(800)]),
+            ),
+            220,
+        );
         assert_eq!(single["truncated"], true);
         let clipped = single["result"][0].as_str().unwrap();
         assert!(clipped.starts_with("first item"));
@@ -576,7 +591,10 @@ mod tests {
         assert_eq!(payload["result"]["url"], result["url"]);
         assert_eq!(payload["result"]["status"], 200);
         assert_eq!(payload["result"]["note"], "short");
-        assert!(payload["result"]["text"].as_str().unwrap().starts_with("page text "));
+        assert!(payload["result"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("page text "));
         assert!(char_len(&python_json(&payload)) <= 400);
     }
 
@@ -602,9 +620,15 @@ mod tests {
 
     #[test]
     fn a_failed_call_keeps_its_fields_and_is_not_trimmed() {
-        let payload = fit(json!({"tool": "kb_search", "ok": false, "error": "tool not allowed: x"}), 10);
+        let payload = fit(
+            json!({"tool": "kb_search", "ok": false, "error": "tool not allowed: x"}),
+            10,
+        );
         assert_eq!(payload["truncated"], false);
-        assert!(payload["error"].as_str().unwrap().contains("tool not allowed"));
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("tool not allowed"));
     }
 
     #[test]
@@ -617,6 +641,11 @@ mod tests {
         assert_eq!(args["limit"], 5);
         let args = clamp_limit(json!({"limit": "x"}).as_object().unwrap().clone(), 10);
         assert_eq!(args["limit"], "x");
+        // `int(2.9) == 2`: fractions truncate instead of passing through.
+        let args = clamp_limit(json!({"limit": 2.9}).as_object().unwrap().clone(), 10);
+        assert_eq!(args["limit"], 2);
+        let args = clamp_limit(json!({"limit": 0.5}).as_object().unwrap().clone(), 10);
+        assert_eq!(args["limit"], 1);
         let args = clamp_limit(json!({}).as_object().unwrap().clone(), 10);
         assert!(args.is_empty());
     }
@@ -626,13 +655,33 @@ mod tests {
         let settings = Settings::default();
         let db = Db::new(":memory:");
         let emit = |_: &str, _: Value| {};
-        let writer = Toolset::new(&settings, &db, &emit, "writer", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
-        assert!(writer.contract().contains("- calc {\"expression\": str} — "));
+        let writer = Toolset::new(
+            &settings,
+            &db,
+            &emit,
+            "writer",
+            1,
+            "run",
+            "src",
+            Deadline::new(std::time::Instant::now(), 60.0),
+        );
+        assert!(writer
+            .contract()
+            .contains("- calc {\"expression\": str} — "));
         assert!(writer.contract().contains("- kb_search {"));
         assert!(!writer.contract().contains("- fetch_url {"));
         assert!(writer.contract().contains("at most 3 tool turns"));
         assert!(writer.contract().contains("1..10"));
-        let researcher = Toolset::new(&settings, &db, &emit, "researcher", 1, "run", "src", Deadline::new(std::time::Instant::now(), 60.0));
+        let researcher = Toolset::new(
+            &settings,
+            &db,
+            &emit,
+            "researcher",
+            1,
+            "run",
+            "src",
+            Deadline::new(std::time::Instant::now(), 60.0),
+        );
         assert_eq!(researcher.tools.len(), 3);
         assert!(!researcher.contract().contains("- calc {"));
         assert!(has_toolset("logger") == false);

@@ -1,4 +1,7 @@
-//! In-process HTTP/SSE tests: backlog replay, live delivery, keepalives, persistence.
+//! Unit-level HTTP/SSE tests: backlog replay, live delivery, keepalives, persistence.
+//!
+//! Builds the router in-process rather than spawning the binary: keepalive timing
+//! is not a binary setting, so the test can shorten it here.
 
 use std::sync::Arc;
 use std::time::Duration;

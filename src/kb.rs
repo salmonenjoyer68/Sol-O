@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::config::ROOT;
+use crate::config;
 
 pub const CHUNK_CHARS: usize = 800;
 
@@ -25,7 +25,7 @@ struct Chunk {
 
 /// Search the repository's `kb/` directory.
 pub fn search_kb(query: &str, limit: i64) -> Result<Vec<Value>, String> {
-    search_kb_in(&Path::new(ROOT).join("kb"), query, limit)
+    search_kb_in(&config::root().join("kb"), query, limit)
 }
 
 /// Search one corpus directory; `shown` paths are relative to its parent.
