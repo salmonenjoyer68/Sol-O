@@ -44,7 +44,7 @@ pub enum Commands {
     Serve {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-        #[arg(long, default_value_t = 8001)]
+        #[arg(long, default_value_t = 8000)]
         port: u16,
     },
     /// Run a task through the orchestrator and print its result.

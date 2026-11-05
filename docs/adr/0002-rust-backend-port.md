@@ -71,3 +71,17 @@ Rewrite the backend in Rust and keep the Python tree in the repo, frozen.
   Rust defaults (`f64::rem_euclid`, `str::len`) would silently change tool output.
 - Cutover requires a clean golden diff and the UI's run/replay/approve/reject flows at
   375/768/1440px against :8001 before the Rust service takes :8000.
+
+## Cutover (ticket #33)
+
+Shipped. `sol-o serve` defaults to `127.0.0.1:8000`, the port the Python service used, so
+the UI and every client keep their address. The golden diff ran one scripted-provider run
+through both services over HTTP: same run detail, same 23 events in the same order with the
+same fields, the same approval payload and the same post-approval status, once ids,
+timestamps and durations are excluded (the only byte difference is JSON member order inside
+`agent_calls[].raw_output`: Rust stores the validated output re-serialized, the reference
+stores the model's text). The UI's run, replay, approve and reject flows were
+verified against the Rust service at 375, 768 and 1440px. `app/`, `tools/` and `tests/` are
+frozen reference code: nothing builds, tests or runs them any more, and no virtualenv is
+needed for the backend. The throwaway replay harness was never committed, so there was
+nothing to delete.
