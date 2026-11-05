@@ -1,6 +1,6 @@
 //! Operator CLI. Only `serve` exists so far; the run subcommands arrive later.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -34,7 +34,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve(host: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::from_path(Path::new(ROOT).join(".env")).ok();
+    if let Some(path) = env_file() {
+        dotenvy::from_path(path).ok();
+    }
     let settings = config::load_settings();
     let db = Db::from_env();
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
@@ -45,6 +47,16 @@ async fn serve(host: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> 
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
+}
+
+/// `SOL_O_ENV_FILE` selects the dotenv file: unset keeps `<ROOT>/.env`, an
+/// empty value loads nothing, and any other value loads that path.
+fn env_file() -> Option<PathBuf> {
+    match std::env::var_os("SOL_O_ENV_FILE") {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(PathBuf::from(value)),
+        None => Some(Path::new(ROOT).join(".env")),
+    }
 }
 
 async fn shutdown() {

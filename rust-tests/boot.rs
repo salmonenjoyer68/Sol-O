@@ -1,5 +1,7 @@
 //! Black-box tests: boot the binary against temporary and hand-built legacy databases.
 
+mod support;
+
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, ChildStderr, Command, Stdio};
@@ -39,6 +41,7 @@ impl Server {
             .env_remove("BASE_URL")
             .env_remove("MODEL")
             .env("SOL_O_DB", database)
+            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
             .current_dir(ROOT)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

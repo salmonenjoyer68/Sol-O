@@ -48,7 +48,10 @@ impl Server {
         ] {
             command.env_remove(name);
         }
-        command.env("SOL_O_DB", database).current_dir(ROOT);
+        command
+            .env("SOL_O_DB", database)
+            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
+            .current_dir(ROOT);
         for (name, value) in envs {
             command.env(name, value);
         }
@@ -95,6 +98,22 @@ impl Server {
             .get(format!("{}{path}", self.base))
             .send()
             .expect("GET")
+    }
+
+    /// Poll saved events until `name` appears; the logger saves the run row
+    /// before the notifier step finishes, so status alone is not a barrier.
+    fn wait_for_event(&self, run_id: &str, name: &str) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let saved: Vec<Value> = self
+                .get(&format!("/runs/{run_id}/events"))
+                .json()
+                .expect("saved events");
+            if saved.iter().any(|event| event["event"] == name) || Instant::now() > deadline {
+                return saved;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn wait_for_run(&self, run_id: &str) -> Value {
@@ -637,10 +656,7 @@ fn inbound_accepts_with_202_and_runs_the_same_plan() {
     let detail = server.wait_for_run(run_id);
     assert_eq!(detail["run"]["status"], "complete");
     assert_eq!(detail["run"]["source"], "telegram");
-    let saved: Vec<Value> = server
-        .get(&format!("/runs/{run_id}/events"))
-        .json()
-        .unwrap();
+    let saved = server.wait_for_event(run_id, "all_done");
     assert!(saved.iter().any(|event| event["event"] == "plan_ready"));
     assert!(saved.iter().any(|event| event["event"] == "all_done"));
     assert_eq!(detail["agent_calls"].as_array().unwrap().len(), 3);
