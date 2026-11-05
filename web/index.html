@@ -209,9 +209,56 @@ function resize() {
   canvas.style.width = W + "px";
   canvas.style.height = H + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  makeBackground();
   makeStars();
 }
 window.addEventListener("resize", resize);
+
+/* Background gradients are built on resize, never per frame. */
+let bgGrad = null;
+let nebulaA = null;
+let nebulaB = null;
+
+function makeBackground() {
+  bgGrad = ctx.createLinearGradient(0, 0, W, H);
+  bgGrad.addColorStop(0, "#050816");
+  bgGrad.addColorStop(0.55, "#070b1f");
+  bgGrad.addColorStop(1, "#0b102b");
+
+  nebulaA = ctx.createRadialGradient(W * 0.22, H * 0.2, 0, W * 0.22, H * 0.2, Math.max(W, H) * 0.5);
+  nebulaA.addColorStop(0, "rgba(96, 68, 190, 0.16)");
+  nebulaA.addColorStop(0.5, "rgba(52, 40, 120, 0.06)");
+  nebulaA.addColorStop(1, "rgba(0, 0, 0, 0)");
+
+  nebulaB = ctx.createRadialGradient(W * 0.82, H * 0.75, 0, W * 0.82, H * 0.75, Math.max(W, H) * 0.42);
+  nebulaB.addColorStop(0, "rgba(30, 90, 160, 0.11)");
+  nebulaB.addColorStop(1, "rgba(0, 0, 0, 0)");
+}
+
+/* One noise tile for the whole session, blitted each frame at low opacity. */
+const noiseTile = document.createElement("canvas");
+noiseTile.width = 256;
+noiseTile.height = 256;
+{
+  const nctx = noiseTile.getContext("2d");
+  const image = nctx.createImageData(256, 256);
+  const data = image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const v = 160 + ((Math.random() * 96) | 0);
+    data[i] = v;
+    data[i + 1] = v;
+    data[i + 2] = v;
+    data[i + 3] = (Math.random() * 255) | 0;
+  }
+  nctx.putImageData(image, 0, 0);
+}
+const noisePattern = ctx.createPattern(noiseTile, "repeat");
+
+const motionPref = window.matchMedia("(prefers-reduced-motion: reduce)");
+let reduceMotion = motionPref.matches;
+motionPref.addEventListener("change", (event) => {
+  reduceMotion = event.matches;
+});
 
 /* ------------------------------------------------------------------ */
 /* Visual constants                                                    */
@@ -272,18 +319,22 @@ const state = {
 
 let stars = [];
 let lastNow = performance.now();
+let camX = 0;
+let camY = 0;
+const CAM_LIMIT = 10;
 
 function makeStars() {
   const count = 150 + Math.floor(Math.random() * 100);
   stars = [];
   for (let i = 0; i < count; i += 1) {
+    const depth = Math.random();
     stars.push({
       x: Math.random() * W,
       y: Math.random() * H,
-      r: 0.4 + Math.random() * 1.5,
+      r: 0.4 + depth * 1.4,
       phase: Math.random() * TAU,
       speed: 0.6 + Math.random() * 1.8,
-      depth: 0.35 + Math.random() * 0.65,
+      depth: 0.25 + depth * 0.75,
     });
   }
 }
@@ -1020,35 +1071,40 @@ async function openPlanet(planet) {
 /* ------------------------------------------------------------------ */
 
 function drawBackground(now) {
-  const gradient = ctx.createLinearGradient(0, 0, W, H);
-  gradient.addColorStop(0, "#04050c");
-  gradient.addColorStop(0.55, "#070713");
-  gradient.addColorStop(1, "#0c0a1e");
-  ctx.fillStyle = gradient;
+  ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, W, H);
-
-  const nebulaA = ctx.createRadialGradient(W * 0.22, H * 0.2, 0, W * 0.22, H * 0.2, Math.max(W, H) * 0.5);
-  nebulaA.addColorStop(0, "rgba(96, 68, 190, 0.20)");
-  nebulaA.addColorStop(0.5, "rgba(52, 40, 120, 0.08)");
-  nebulaA.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = nebulaA;
   ctx.fillRect(0, 0, W, H);
-
-  const nebulaB = ctx.createRadialGradient(W * 0.82, H * 0.75, 0, W * 0.82, H * 0.75, Math.max(W, H) * 0.42);
-  nebulaB.addColorStop(0, "rgba(30, 90, 160, 0.14)");
-  nebulaB.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = nebulaB;
   ctx.fillRect(0, 0, W, H);
 
-  for (const star of stars) {
-    const twinkle = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.001 * star.speed + star.phase));
-    ctx.globalAlpha = twinkle * star.depth;
-    ctx.fillStyle = "#dbe4ff";
+  if (reduceMotion) {
+    camX = 0;
+    camY = 0;
+  } else {
+    camX += ((pointer.x / W - 0.5) * 2 - camX) * 0.05;
+    camY += ((pointer.y / H - 0.5) * 2 - camY) * 0.05;
+  }
+
+  ctx.fillStyle = "#dbe4ff";
+  for (let i = 0; i < stars.length; i += 1) {
+    const star = stars[i];
+    ctx.globalAlpha = reduceMotion
+      ? 0.35 + 0.55 * star.depth
+      : (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(now * 0.001 * star.speed + star.phase))) * star.depth;
     ctx.beginPath();
-    ctx.arc(star.x, star.y, star.r, 0, TAU);
+    ctx.arc(star.x + camX * CAM_LIMIT * star.depth, star.y + camY * CAM_LIMIT * star.depth, star.r, 0, TAU);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  // Grain blitted in device pixels so it stays crisp at any dpr.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 0.06;
+  ctx.fillStyle = noisePattern;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
 }
 
 function drawOrbitRings() {
@@ -1420,10 +1476,11 @@ document.addEventListener("visibilitychange", () => {
 /* Pointer interaction                                                 */
 /* ------------------------------------------------------------------ */
 
-let pointer = { x: 0, y: 0 };
+let pointer = { x: W / 2, y: H / 2 };
 
 canvas.addEventListener("mousemove", (event) => {
-  pointer = { x: event.clientX, y: event.clientY };
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
   let found = null;
   for (const planet of state.planets.values()) {
     if (!planet.sx) continue;
