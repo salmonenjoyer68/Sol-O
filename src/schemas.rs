@@ -244,6 +244,77 @@ pub fn validate_step_output(agent: &str, value: serde_json::Value) -> Result<ser
     parsed.map_err(|error| format!("schema validation failed: {error}"))
 }
 
+/// One planned agent call, mirroring `schemas.PlanStep`.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedStep {
+    pub agent: String,
+    pub task: String,
+}
+
+/// Planner output, mirroring `schemas.SunPlan`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SunPlanOutput {
+    pub steps: Vec<PlannedStep>,
+}
+
+/// The planner's provider schema: `SunPlan.model_json_schema()` with the agent
+/// field restricted to `agents` and the step count bounded by `max_agents`.
+pub fn plan_schema(agents: &[String], max_agents: i64) -> serde_json::Value {
+    let mut schema = serde_json::json!({
+        "$defs": {
+            "PlanStep": {
+                "additionalProperties": false,
+                "description": "One planned agent call.",
+                "properties": {
+                    "agent": {"minLength": 1, "title": "Agent", "type": "string"},
+                    "task": {"minLength": 1, "title": "Task", "type": "string"}
+                },
+                "required": ["agent", "task"],
+                "title": "PlanStep",
+                "type": "object"
+            }
+        },
+        "additionalProperties": false,
+        "description": "Planner output: the ordered steps for one run.",
+        "properties": {
+            "steps": {
+                "items": {"$ref": "#/$defs/PlanStep"},
+                "title": "Steps",
+                "type": "array"
+            }
+        },
+        "required": ["steps"],
+        "title": "SunPlan",
+        "type": "object"
+    });
+    schema["$defs"]["PlanStep"]["properties"]["agent"]["enum"] = serde_json::json!(agents);
+    schema["properties"]["steps"]["minItems"] = serde_json::json!(1);
+    schema["properties"]["steps"]["maxItems"] = serde_json::json!(max_agents);
+    schema
+}
+
+/// Validate a planner response against `SunPlan` and return its normalized JSON.
+pub fn validate_plan(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let plan: SunPlanOutput = serde_json::from_value(value)
+        .map_err(|error| format!("schema validation failed: {error}"))?;
+    if plan
+        .steps
+        .iter()
+        .any(|step| step.agent.is_empty() || step.task.is_empty())
+    {
+        return Err("schema validation failed: agent and task must not be empty".to_string());
+    }
+    Ok(serde_json::json!({
+        "steps": plan
+            .steps
+            .iter()
+            .map(|step| serde_json::json!({"agent": step.agent, "task": step.task}))
+            .collect::<Vec<_>>()
+    }))
+}
+
 /// Strict provider-side schema for the first rung of the response-format ladder.
 pub fn agent_output_schema() -> serde_json::Value {
     serde_json::json!({
