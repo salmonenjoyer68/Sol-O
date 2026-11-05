@@ -4,12 +4,19 @@
 //! keeps working unchanged.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
 /// Repository root, resolved at build time like the reference's `Path(__file__).parent.parent`.
 pub const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+
+/// Prompt directory. `SOL_O_AGENTS_DIR` is a hermetic-test seam like `SOL_O_DB`.
+pub fn agents_dir() -> PathBuf {
+    std::env::var_os("SOL_O_AGENTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(ROOT).join("agents"))
+}
 
 #[derive(Debug, Clone)]
 pub struct Settings {

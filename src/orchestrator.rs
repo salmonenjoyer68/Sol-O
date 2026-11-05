@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::agents::{self, FailureType, ParseError, RunError, STEP_CONTRACT};
+use crate::agents::{self, FailureType, ParseError, RunError, PLAN_CONTRACT, PLANNER_AGENT, STEP_CONTRACT};
 use crate::approvals::{approval_required, create_pending};
-use crate::config::{Settings, ROOT};
+use crate::config::{self, Settings};
 use crate::events::EventBus;
 use crate::llm;
 use crate::persistence::{self, Db, NewAgentCall, NewToolCall};
@@ -36,6 +36,17 @@ const REVISION_CHECK_TASK: &str = "Re-review the revised writer draft against th
 const NO_RESULTS_NOTE: &str = "No search results are available. Do not invent sources: mark every claim 'unverified' and list what could not be checked in gaps.";
 const EMPTY_RESULTS_NOTE: &str =
     "The search returned no results. Mark every claim 'unverified' and list gaps.";
+/// A step may only run when the agents it consumes have already produced output.
+const REQUIRED_PRIOR_AGENTS: [(&str, &[&str]); 1] = [("checker", &["writer"])];
+
+/// Why `plan_with_llm` stopped, before it is turned into run state.
+enum PlannerStop {
+    Timeout(String),
+    Run(agents::AgentRunError),
+    MissingPrompt,
+    /// The prompt exists but could not be read; the reference lets this escape.
+    Aborted(String),
+}
 
 /// A stopped run's structured failure, mirroring `schemas.Failure`.
 #[derive(Clone, Debug)]
@@ -131,7 +142,7 @@ impl Orchestrator {
             settings,
             db,
             bus,
-            agents_dir: PathBuf::from(ROOT).join("agents"),
+            agents_dir: config::agents_dir(),
             search,
         }
     }
@@ -142,6 +153,172 @@ impl Orchestrator {
         self
     }
 
+    /// Agents the planner may choose: prompt files with a validation model, minus Sun.
+    fn available_agents(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.agents_dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| {
+                entry.path().extension().and_then(|extension| extension.to_str()) == Some("md")
+            })
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        names.sort();
+        names.retain(|name| {
+            name != PLANNER_AGENT
+                && agents::valid_agent_name(name)
+                && schemas::step_schema(name).is_some()
+        });
+        names
+    }
+
+    /// Ask the Sun planner for a plan, then drop unknown or out-of-order steps
+    /// and truncate it at the configured cap.
+    fn plan_with_llm(
+        &self,
+        task: &str,
+        run_id: &str,
+        emitter: &Emitter<'_>,
+        deadline: Deadline,
+    ) -> Result<Vec<PlanStep>, PlannerStop> {
+        let agents = self.available_agents();
+        let available = agents
+            .iter()
+            .map(|name| format!("- {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user_content = format!("Task:\n{}\n\nAvailable agents:\n{available}", task.trim());
+
+        // The reference refuses to start a call it cannot finish.
+        let remaining = deadline.remaining();
+        if remaining <= 0.0 {
+            return Err(PlannerStop::Timeout(format!(
+                "run exceeded {:.1}s before agent={PLANNER_AGENT}",
+                deadline.seconds
+            )));
+        }
+
+        let schema = schemas::plan_schema(&agents, self.settings.max_agents);
+        let started_at = persistence::now_iso();
+        let started = Instant::now();
+        let mut on_attempt = |call: usize, attempt: usize| {
+            emitter.emit(
+                "agent_working",
+                json!({"step": 0, "agent": PLANNER_AGENT, "attempt": attempt, "call": call}),
+            );
+        };
+        let parse = |value: Value| {
+            schemas::validate_plan(value)
+                .map_err(|message| ParseError::new(FailureType::SchemaMismatch, message))
+        };
+        let call_timeout = Duration::from_secs_f64(
+            self.settings
+                .llm_timeout_seconds
+                .min(remaining)
+                .max(0.001),
+        );
+        let model = resolved_model(&self.settings, PLANNER_AGENT);
+        let validated = match agents::run_validated(
+            &self.settings,
+            &self.agents_dir,
+            PLANNER_AGENT,
+            &user_content,
+            PLAN_CONTRACT,
+            &schema,
+            &parse,
+            Some(call_timeout),
+            &mut on_attempt,
+        ) {
+            Ok(validated) => validated,
+            Err(RunError::Run(error)) => {
+                self.record_agent_call(NewAgentCall {
+                    run_id: run_id.to_string(),
+                    step: 0,
+                    agent: PLANNER_AGENT.to_string(),
+                    started_at,
+                    duration_ms: started.elapsed().as_millis() as i64,
+                    attempts: error.attempts as i64,
+                    tool_turns: 0,
+                    status: "failed".to_string(),
+                    error_type: Some(error.failure_type.as_str().to_string()),
+                    error_message: Some(error.detail.clone()),
+                    input_chars: user_content.chars().count() as i64,
+                    output_chars: error.raw.chars().count() as i64,
+                    raw_output: error.raw.clone(),
+                    model,
+                });
+                return Err(PlannerStop::Run(error));
+            }
+            Err(RunError::NotFound(_)) => return Err(PlannerStop::MissingPrompt),
+            Err(other) => return Err(PlannerStop::Aborted(format!("{other:?}"))),
+        };
+
+        let raw_output =
+            serde_json::to_string(&validated.output).expect("validated plan serializes");
+        self.record_agent_call(NewAgentCall {
+            run_id: run_id.to_string(),
+            step: 0,
+            agent: PLANNER_AGENT.to_string(),
+            started_at,
+            duration_ms: started.elapsed().as_millis() as i64,
+            attempts: validated.attempts as i64,
+            tool_turns: 0,
+            status: "ok".to_string(),
+            error_type: None,
+            error_message: None,
+            input_chars: user_content.chars().count() as i64,
+            output_chars: raw_output.chars().count() as i64,
+            raw_output,
+            model,
+        });
+
+        let plan: schemas::SunPlanOutput = serde_json::from_value(validated.output)
+            .expect("run_validated returns a validated SunPlan");
+        let mut seen: Vec<String> = Vec::new();
+        let mut steps: Vec<PlanStep> = Vec::new();
+        for step in plan.steps {
+            if !agents.contains(&step.agent) {
+                tracing::warn!(agent = %step.agent, "planner dropped unknown agent");
+                continue;
+            }
+            let missing: Vec<&str> = REQUIRED_PRIOR_AGENTS
+                .iter()
+                .filter(|(agent, _)| *agent == step.agent.as_str())
+                .flat_map(|(_, required)| required.iter().copied())
+                .filter(|required| !seen.iter().any(|kept| kept.as_str() == *required))
+                .collect();
+            if !missing.is_empty() {
+                tracing::warn!(
+                    agent = %step.agent,
+                    missing = missing.join(", "),
+                    "planner dropped step missing earlier output"
+                );
+                continue;
+            }
+            if steps.len() as i64 == self.settings.max_agents {
+                tracing::warn!(
+                    max_agents = self.settings.max_agents,
+                    "planner exceeded the step cap; truncating"
+                );
+                break;
+            }
+            seen.push(step.agent.clone());
+            steps.push(PlanStep {
+                agent: step.agent,
+                task: step.task,
+            });
+        }
+        Ok(steps)
+    }
+
     /// Run one orchestration. Must be called from a blocking context.
     pub fn run(
         &self,
@@ -150,8 +327,6 @@ impl Orchestrator {
         run_id: &str,
         source: &str,
     ) -> Result<(), String> {
-        // #30 adds the LLM planner; this ticket always plans hardcoded.
-        let _ = use_llm_planner;
         let started = Instant::now();
         let deadline = Deadline::new(started, self.settings.run_timeout_seconds);
         let handle = tokio::runtime::Handle::current();
@@ -187,28 +362,124 @@ impl Orchestrator {
 
         emitter.emit("run_started", json!({"task": redact(&task)}));
 
-        let mut plan: Vec<PlanStep> = DEFAULT_PLAN
-            .iter()
-            .map(|agent| PlanStep {
-                agent: (*agent).to_string(),
-                task: task.clone(),
-            })
-            .collect();
-        emitter.emit(
-            "plan_ready",
-            json!({
-                "planner": "hardcoded",
-                "agents": plan.iter().map(|step| step.agent.clone()).collect::<Vec<_>>(),
-                "steps": plan.iter().map(|step| json!({"agent": step.agent, "task": step.task})).collect::<Vec<_>>(),
-            }),
-        );
-
+        let planner = if use_llm_planner { "llm" } else { "hardcoded" };
         let mut outputs: Vec<StepResult> = Vec::new();
         let mut status = "complete";
         let mut stopped_at: Option<String> = None;
         let mut reason: Option<String> = None;
         let mut failed_at: Option<String> = None;
         let mut failure: Option<Failure> = None;
+        let mut plan: Vec<PlanStep> = Vec::new();
+
+        if use_llm_planner {
+            match self.plan_with_llm(&task, run_id, &emitter, deadline) {
+                Ok(steps) => plan = steps,
+                Err(stop) => {
+                    let stop_reason = match stop {
+                        PlannerStop::Timeout(message) => {
+                            status = "failed";
+                            failed_at = Some(PLANNER_AGENT.to_string());
+                            stopped_at = Some(PLANNER_AGENT.to_string());
+                            failure = Some(Failure::new(
+                                PLANNER_AGENT,
+                                FailureType::Timeout,
+                                &format!("run_timeout: {message}"),
+                                "",
+                                0,
+                                0,
+                            ));
+                            "run_timeout".to_string()
+                        }
+                        PlannerStop::Run(error) => {
+                            status = "failed";
+                            failed_at = Some(PLANNER_AGENT.to_string());
+                            stopped_at = Some(PLANNER_AGENT.to_string());
+                            failure = Some(Failure::new(
+                                PLANNER_AGENT,
+                                error.failure_type,
+                                &format!("planner failed: {}", error.detail),
+                                &error.raw,
+                                error.attempts,
+                                0,
+                            ));
+                            format!("{}: {}", error.failure_type.as_str(), error.detail)
+                        }
+                        PlannerStop::MissingPrompt => {
+                            status = "failed";
+                            failed_at = Some(PLANNER_AGENT.to_string());
+                            stopped_at = Some(PLANNER_AGENT.to_string());
+                            let text =
+                                format!("llm_error: planner prompt missing ({PLANNER_AGENT})");
+                            failure = Some(Failure::new(
+                                PLANNER_AGENT,
+                                FailureType::LlmError,
+                                &text,
+                                "",
+                                1,
+                                0,
+                            ));
+                            text
+                        }
+                        PlannerStop::Aborted(message) => return Err(message),
+                    };
+                    reason = Some(stop_reason.clone());
+                    emitter.emit(
+                        "stopped",
+                        json!({
+                            "step": 0,
+                            "agent": PLANNER_AGENT,
+                            "status": status,
+                            "reason": stop_reason,
+                        }),
+                    );
+                }
+            }
+            // An empty plan is a planner failure, not an empty run.
+            if reason.is_none() && plan.is_empty() {
+                status = "failed";
+                failed_at = Some(PLANNER_AGENT.to_string());
+                stopped_at = Some(PLANNER_AGENT.to_string());
+                let text = "planner returned no usable steps".to_string();
+                failure = Some(Failure::new(
+                    PLANNER_AGENT,
+                    FailureType::InvalidJson,
+                    &text,
+                    "",
+                    1,
+                    0,
+                ));
+                reason = Some(text.clone());
+                emitter.emit(
+                    "stopped",
+                    json!({
+                        "step": 0,
+                        "agent": PLANNER_AGENT,
+                        "status": status,
+                        "reason": text,
+                    }),
+                );
+            }
+        } else {
+            plan = DEFAULT_PLAN
+                .iter()
+                .map(|agent| PlanStep {
+                    agent: (*agent).to_string(),
+                    task: task.clone(),
+                })
+                .collect();
+        }
+
+        if reason.is_none() {
+            emitter.emit(
+                "plan_ready",
+                json!({
+                    "planner": planner,
+                    "agents": plan.iter().map(|step| step.agent.clone()).collect::<Vec<_>>(),
+                    "steps": plan.iter().map(|step| json!({"agent": step.agent, "task": step.task})).collect::<Vec<_>>(),
+                }),
+            );
+        }
+
         let mut search_block: Option<Value> = None;
         let mut revision_used = false;
         let mut index = 0;

@@ -116,7 +116,7 @@ async fn run(
     require_non_empty("agent", &request.agent)?;
     require_non_empty("task", &request.task)?;
     let settings = state.settings.clone();
-    let agents_dir = PathBuf::from(ROOT).join("agents");
+    let agents_dir = crate::config::agents_dir();
     match tokio::task::spawn_blocking(move || execute_run(&settings, &agents_dir, request)).await {
         Ok(result) => result.map(Json),
         Err(error) => Err(database_error(&format!("run task failed: {error}"))),
