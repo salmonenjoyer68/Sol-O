@@ -470,7 +470,7 @@ mod tests {
             "http://localhost:3000",
             "https://localhost:8443",
             "http://127.0.0.1",
-            "https://127.0.0.1:8001",
+            "https://127.0.0.1:8000",
         ] {
             assert!(is_localhost_origin(origin), "{origin} should be allowed");
         }
