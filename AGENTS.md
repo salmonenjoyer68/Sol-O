@@ -93,4 +93,4 @@ Canonical five roles, default strings: `needs-triage`, `needs-info`, `ready-for-
 
 ### Domain docs
 
-Single-context: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: root `GLOSSARY.md` (terminology) plus `docs/adr/` (decisions). See `docs/agents/domain.md`.
