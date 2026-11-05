@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::agents::{self, FailureType, ParseError, RunError, PLAN_CONTRACT, PLANNER_AGENT, STEP_CONTRACT};
@@ -95,6 +96,39 @@ struct StepResult {
     duration_seconds: f64,
     output: Value,
     tool_turns: i64,
+}
+
+/// Result of one Sun run, matching `schemas.OrchestrationResult` field order.
+#[derive(Debug, Serialize)]
+pub struct OrchestrationResult {
+    pub status: String,
+    pub task: String,
+    pub planner: &'static str,
+    pub plan: Vec<PlanStepView>,
+    pub outputs: Vec<Value>,
+    pub stopped_at: Option<String>,
+    pub reason: Option<String>,
+    pub failed_at: Option<String>,
+    pub failure: Option<FailureView>,
+    pub warning: Option<String>,
+    pub run_id: String,
+    pub duration_seconds: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlanStepView {
+    pub agent: String,
+    pub task: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FailureView {
+    pub agent: String,
+    pub error_type: String,
+    pub message: String,
+    pub raw_output: String,
+    pub attempts: usize,
+    pub tool_turns: i64,
 }
 
 impl StepResult {
@@ -328,7 +362,7 @@ impl Orchestrator {
         use_llm_planner: bool,
         run_id: &str,
         source: &str,
-    ) -> Result<(), String> {
+    ) -> Result<OrchestrationResult, String> {
         let started = Instant::now();
         let deadline = Deadline::new(started, self.settings.run_timeout_seconds);
         let handle = tokio::runtime::Handle::current();
@@ -1113,7 +1147,33 @@ impl Orchestrator {
                 }),
             );
         }
-        Ok(())
+        Ok(OrchestrationResult {
+            status: status.to_string(),
+            task,
+            planner: "hardcoded",
+            plan: plan
+                .iter()
+                .map(|step| PlanStepView {
+                    agent: step.agent.clone(),
+                    task: step.task.clone(),
+                })
+                .collect(),
+            outputs: outputs.iter().map(StepResult::to_value).collect(),
+            stopped_at,
+            reason,
+            failed_at,
+            failure: failure.map(|failed| FailureView {
+                agent: failed.agent,
+                error_type: failed.error_type.as_str().to_string(),
+                message: failed.message,
+                raw_output: failed.raw_output,
+                attempts: failed.attempts,
+                tool_turns: failed.tool_turns,
+            }),
+            warning,
+            run_id: run_id.to_string(),
+            duration_seconds: round2(started.elapsed().as_secs_f64()),
+        })
     }
 
     fn record_agent_call(&self, call: NewAgentCall) {

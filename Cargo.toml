@@ -59,3 +59,7 @@ path = "rust-tests/planner.rs"
 [[test]]
 name = "toolbox"
 path = "rust-tests/toolbox.rs"
+
+[[test]]
+name = "cli"
+path = "rust-tests/cli.rs"
