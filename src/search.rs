@@ -14,58 +14,53 @@ use crate::reliability::redact;
 pub const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 const MAX_QUERY_CHARS: usize = 400;
 
-/// Injectable so process tests never reach the network.
-pub trait SearchTool: Send + Sync {
-    fn search(&self, query: &str) -> Result<Vec<Value>, String>;
-}
-
-pub struct TavilySearch {
-    pub settings: Settings,
-}
-
-impl SearchTool for TavilySearch {
-    fn search(&self, query: &str) -> Result<Vec<Value>, String> {
-        let api_key = std::env::var("TAVILY_API_KEY")
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if api_key.is_empty() {
-            return Err(redact("TAVILY_API_KEY is not set"));
-        }
-        let cleaned = collapse(query);
-        if cleaned.is_empty() {
-            return Err(redact("empty search query"));
-        }
-        let endpoint = std::env::var("SOL_O_TAVILY_ENDPOINT")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| TAVILY_ENDPOINT.to_string());
-
-        let body = json!({
-            "query": cleaned.chars().take(MAX_QUERY_CHARS).collect::<String>(),
-            "max_results": 5,
-            "search_depth": "basic",
-            "include_answer": false,
-        });
-        let payload = post_with_retry(&self.settings, &endpoint, &api_key, &body)?;
-        let raw_results = payload.get("results").and_then(Value::as_array);
-        let Some(raw_results) = raw_results else {
-            return Err(redact("unexpected Tavily response shape"));
-        };
-        let mut results = Vec::new();
-        for item in raw_results {
-            let url = item.get("url").and_then(Value::as_str).unwrap_or("").trim();
-            if url.is_empty() {
-                continue;
-            }
-            let title = item.get("title").and_then(Value::as_str).unwrap_or("").trim();
-            let content = collapse(item.get("content").and_then(Value::as_str).unwrap_or(""));
-            results.push(json!({"title": title, "url": url, "content": content}));
-        }
-        results.truncate(5);
-        Ok(results)
+/// One Tavily search. `SOL_O_TAVILY_ENDPOINT` points process tests at a loopback
+/// stand-in so they never reach the network.
+pub fn search(settings: &Settings, query: &str) -> Result<Vec<Value>, String> {
+    let api_key = std::env::var("TAVILY_API_KEY")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if api_key.is_empty() {
+        return Err(redact("TAVILY_API_KEY is not set"));
     }
+    let cleaned = collapse(query);
+    if cleaned.is_empty() {
+        return Err(redact("empty search query"));
+    }
+    let endpoint = std::env::var("SOL_O_TAVILY_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| TAVILY_ENDPOINT.to_string());
+
+    let body = json!({
+        "query": cleaned.chars().take(MAX_QUERY_CHARS).collect::<String>(),
+        "max_results": 5,
+        "search_depth": "basic",
+        "include_answer": false,
+    });
+    let payload = post_with_retry(settings, &endpoint, &api_key, &body)?;
+    let raw_results = payload.get("results").and_then(Value::as_array);
+    let Some(raw_results) = raw_results else {
+        return Err(redact("unexpected Tavily response shape"));
+    };
+    let mut results = Vec::new();
+    for item in raw_results {
+        let url = item.get("url").and_then(Value::as_str).unwrap_or("").trim();
+        if url.is_empty() {
+            continue;
+        }
+        let title = item
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let content = collapse(item.get("content").and_then(Value::as_str).unwrap_or(""));
+        results.push(json!({"title": title, "url": url, "content": content}));
+    }
+    results.truncate(5);
+    Ok(results)
 }
 
 fn post_with_retry(

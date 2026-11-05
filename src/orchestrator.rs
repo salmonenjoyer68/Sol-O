@@ -2,8 +2,9 @@
 //!
 //! Mirrors the success path of `app/orchestrator.py`: events flow through the
 //! bus (persisted, streamed, replayable), every LLM call is audited in
-//! `agent_calls`, the logger step stores the run, and the notifier only records
-//! a status for now.
+//! `agent_calls`, the logger step stores the run, and the notifier sends the
+//! Telegram message, or stores a pending action for human approval, or skips a
+//! failed run.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,15 +13,17 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::agents::{self, FailureType, ParseError, RunError, PLAN_CONTRACT, PLANNER_AGENT, STEP_CONTRACT};
+use crate::agents::{
+    self, FailureType, ParseError, RunError, PLANNER_AGENT, PLAN_CONTRACT, STEP_CONTRACT,
+};
 use crate::approvals::{approval_required, create_pending};
 use crate::config::{self, Settings};
 use crate::events::EventBus;
 use crate::llm;
-use crate::persistence::{self, Db, NewAgentCall, NewToolCall};
+use crate::persistence::{self, Db, NewAgentCall, NewToolCall, MAX_RAW_CHARS};
 use crate::reliability::{redact, truncate, Deadline};
-use crate::schemas::{self, step_schema};
-use crate::search::{SearchTool, TavilySearch};
+use crate::schemas::{self, step_schema, PlannedStep};
+use crate::search;
 use crate::telegram::{self, TelegramError};
 use crate::toolbox::{has_toolset, Toolset};
 
@@ -32,8 +35,6 @@ pub const NOTIFIER_TASK: &str =
 
 const SUMMARY_LIMIT: usize = 140;
 const SEARCH_QUERY_CHARS: usize = 400;
-/// `MAX_RAW_CHARS` in `app/reliability.py`; structured failure text is capped here.
-const MAX_FAILURE_CHARS: usize = 2000;
 const REVISION_CHECK_TASK: &str = "Re-review the revised writer draft against the researcher findings and confirm whether every previously reported issue is fixed.";
 const NO_RESULTS_NOTE: &str = "No search results are available. Do not invent sources: mark every claim 'unverified' and list what could not be checked in gaps.";
 const EMPTY_RESULTS_NOTE: &str =
@@ -73,18 +74,12 @@ impl Failure {
         Self {
             agent: agent.to_string(),
             error_type,
-            message: truncate(&redact(message), MAX_FAILURE_CHARS),
-            raw_output: truncate(&redact(raw), MAX_FAILURE_CHARS),
+            message: truncate(&redact(message), MAX_RAW_CHARS),
+            raw_output: truncate(&redact(raw), MAX_RAW_CHARS),
             attempts,
             tool_turns,
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct PlanStep {
-    agent: String,
-    task: String,
 }
 
 #[derive(Clone, Debug)]
@@ -104,7 +99,7 @@ pub struct OrchestrationResult {
     pub status: String,
     pub task: String,
     pub planner: &'static str,
-    pub plan: Vec<PlanStepView>,
+    pub plan: Vec<PlannedStep>,
     pub outputs: Vec<Value>,
     pub stopped_at: Option<String>,
     pub reason: Option<String>,
@@ -113,12 +108,6 @@ pub struct OrchestrationResult {
     pub warning: Option<String>,
     pub run_id: String,
     pub duration_seconds: f64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PlanStepView {
-    pub agent: String,
-    pub task: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,27 +154,16 @@ pub struct Orchestrator {
     pub db: Db,
     pub bus: Arc<EventBus>,
     pub agents_dir: PathBuf,
-    search: Arc<dyn SearchTool>,
 }
 
 impl Orchestrator {
     pub fn new(settings: Arc<Settings>, db: Db, bus: Arc<EventBus>) -> Self {
-        let search: Arc<dyn SearchTool> = Arc::new(TavilySearch {
-            settings: (*settings).clone(),
-        });
         Self {
             settings,
             db,
             bus,
             agents_dir: config::agents_dir(),
-            search,
         }
-    }
-
-    /// Replace the search implementation; tests inject a stub and never use the network.
-    pub fn with_search(mut self, search: Arc<dyn SearchTool>) -> Self {
-        self.search = search;
-        self
     }
 
     /// Agents the planner may choose: prompt files with a validation model, minus Sun.
@@ -196,7 +174,11 @@ impl Orchestrator {
         let mut names: Vec<String> = entries
             .flatten()
             .filter(|entry| {
-                entry.path().extension().and_then(|extension| extension.to_str()) == Some("md")
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("md")
             })
             .filter_map(|entry| {
                 entry
@@ -223,7 +205,7 @@ impl Orchestrator {
         run_id: &str,
         emitter: &Emitter<'_>,
         deadline: Deadline,
-    ) -> Result<Vec<PlanStep>, PlannerStop> {
+    ) -> Result<Vec<PlannedStep>, PlannerStop> {
         let agents = self.available_agents();
         let available = agents
             .iter()
@@ -254,12 +236,8 @@ impl Orchestrator {
             schemas::validate_plan(value)
                 .map_err(|message| ParseError::new(FailureType::SchemaMismatch, message))
         };
-        let call_timeout = Duration::from_secs_f64(
-            self.settings
-                .llm_timeout_seconds
-                .min(remaining)
-                .max(0.001),
-        );
+        let call_timeout =
+            Duration::from_secs_f64(self.settings.llm_timeout_seconds.min(remaining).max(0.001));
         let model = resolved_model(&self.settings, PLANNER_AGENT);
         let validated = match agents::run_validated(
             &self.settings,
@@ -275,22 +253,20 @@ impl Orchestrator {
         ) {
             Ok(validated) => validated,
             Err(RunError::Run(error)) => {
-                self.record_agent_call(NewAgentCall {
-                    run_id: run_id.to_string(),
-                    step: 0,
-                    agent: PLANNER_AGENT.to_string(),
+                self.record_agent_call(call_row(
+                    run_id,
+                    0,
+                    PLANNER_AGENT,
                     started_at,
-                    duration_ms: started.elapsed().as_millis() as i64,
-                    attempts: error.attempts as i64,
-                    tool_turns: 0,
-                    status: "failed".to_string(),
-                    error_type: Some(error.failure_type.as_str().to_string()),
-                    error_message: Some(error.detail.clone()),
-                    input_chars: user_content.chars().count() as i64,
-                    output_chars: error.raw.chars().count() as i64,
-                    raw_output: error.raw.clone(),
+                    started,
+                    error.attempts as i64,
+                    0,
                     model,
-                });
+                    &user_content,
+                    error.raw.chars().count() as i64,
+                    error.raw.clone(),
+                    Some((&error.failure_type, &error.detail)),
+                ));
                 return Err(PlannerStop::Run(error));
             }
             Err(RunError::NotFound(_)) => return Err(PlannerStop::MissingPrompt),
@@ -299,27 +275,25 @@ impl Orchestrator {
 
         let raw_output =
             serde_json::to_string(&validated.output).expect("validated plan serializes");
-        self.record_agent_call(NewAgentCall {
-            run_id: run_id.to_string(),
-            step: 0,
-            agent: PLANNER_AGENT.to_string(),
+        self.record_agent_call(call_row(
+            run_id,
+            0,
+            PLANNER_AGENT,
             started_at,
-            duration_ms: started.elapsed().as_millis() as i64,
-            attempts: validated.attempts as i64,
-            tool_turns: 0,
-            status: "ok".to_string(),
-            error_type: None,
-            error_message: None,
-            input_chars: user_content.chars().count() as i64,
-            output_chars: raw_output.chars().count() as i64,
-            raw_output,
+            started,
+            validated.attempts as i64,
+            0,
             model,
-        });
+            &user_content,
+            raw_output.chars().count() as i64,
+            raw_output,
+            None,
+        ));
 
         let plan: schemas::SunPlanOutput = serde_json::from_value(validated.output)
             .expect("run_validated returns a validated SunPlan");
         let mut seen: Vec<String> = Vec::new();
-        let mut steps: Vec<PlanStep> = Vec::new();
+        let mut steps: Vec<PlannedStep> = Vec::new();
         for step in plan.steps {
             if !agents.contains(&step.agent) {
                 tracing::warn!(agent = %step.agent, "planner dropped unknown agent");
@@ -347,7 +321,7 @@ impl Orchestrator {
                 break;
             }
             seen.push(step.agent.clone());
-            steps.push(PlanStep {
+            steps.push(PlannedStep {
                 agent: step.agent,
                 task: step.task,
             });
@@ -405,7 +379,7 @@ impl Orchestrator {
         let mut reason: Option<String> = None;
         let mut failed_at: Option<String> = None;
         let mut failure: Option<Failure> = None;
-        let mut plan: Vec<PlanStep> = Vec::new();
+        let mut plan: Vec<PlannedStep> = Vec::new();
 
         if use_llm_planner {
             match self.plan_with_llm(&task, run_id, &emitter, deadline) {
@@ -498,7 +472,7 @@ impl Orchestrator {
         } else {
             plan = DEFAULT_PLAN
                 .iter()
-                .map(|agent| PlanStep {
+                .map(|agent| PlannedStep {
                     agent: (*agent).to_string(),
                     task: task.clone(),
                 })
@@ -606,7 +580,7 @@ impl Orchestrator {
                 search_block = Some(block);
             }
 
-            let message = agent_message(&task, &step.agent, &step.task, &outputs, &extra);
+            let message = agent_message(&task, &step.task, &outputs, &extra);
             let Some(schema) = step_schema(&step.agent) else {
                 return Err(format!("unknown agent: {}", step.agent));
             };
@@ -687,22 +661,20 @@ impl Orchestrator {
                         error.attempts,
                         error.tool_turns as i64,
                     );
-                    self.record_agent_call(NewAgentCall {
-                        run_id: run_id.to_string(),
-                        step: number,
-                        agent: failed.agent.clone(),
+                    self.record_agent_call(call_row(
+                        run_id,
+                        number,
+                        &failed.agent,
                         started_at,
-                        duration_ms: step_started.elapsed().as_millis() as i64,
-                        attempts: failed.attempts as i64,
-                        tool_turns: failed.tool_turns,
-                        status: "failed".to_string(),
-                        error_type: Some(failed.error_type.as_str().to_string()),
-                        error_message: Some(failed.message.clone()),
-                        input_chars: message.chars().count() as i64,
-                        output_chars: error.raw.chars().count() as i64,
-                        raw_output: failed.raw_output.clone(),
-                        model: resolved_model(&self.settings, &step.agent),
-                    });
+                        step_started,
+                        failed.attempts as i64,
+                        failed.tool_turns,
+                        resolved_model(&self.settings, &step.agent),
+                        &message,
+                        error.raw.chars().count() as i64,
+                        failed.raw_output.clone(),
+                        Some((&failed.error_type, &failed.message)),
+                    ));
                     emitter.emit(
                         "agent_failed",
                         json!({
@@ -736,22 +708,20 @@ impl Orchestrator {
 
             let raw_output =
                 serde_json::to_string(&validated.output).expect("validated output serializes");
-            self.record_agent_call(NewAgentCall {
-                run_id: run_id.to_string(),
-                step: number,
-                agent: step.agent.clone(),
+            self.record_agent_call(call_row(
+                run_id,
+                number,
+                &step.agent,
                 started_at,
-                duration_ms: step_started.elapsed().as_millis() as i64,
-                attempts: validated.attempts as i64,
-                tool_turns: validated.tool_turns as i64,
-                status: "ok".to_string(),
-                error_type: None,
-                error_message: None,
-                input_chars: message.chars().count() as i64,
-                output_chars: raw_output.chars().count() as i64,
+                step_started,
+                validated.attempts as i64,
+                validated.tool_turns as i64,
+                resolved_model(&self.settings, &step.agent),
+                &message,
+                raw_output.chars().count() as i64,
                 raw_output,
-                model: resolved_model(&self.settings, &step.agent),
-            });
+                None,
+            ));
 
             let duration_seconds = round2(validated.duration_ms as f64 / 1000.0);
             let summary = summary(&step.agent, &validated.output);
@@ -839,14 +809,14 @@ impl Orchestrator {
                 );
                 plan.insert(
                     index + 1,
-                    PlanStep {
+                    PlannedStep {
                         agent: "writer".to_string(),
                         task: revision_task(&issues),
                     },
                 );
                 plan.insert(
                     index + 2,
-                    PlanStep {
+                    PlannedStep {
                         agent: "checker".to_string(),
                         task: REVISION_CHECK_TASK.to_string(),
                     },
@@ -874,20 +844,28 @@ impl Orchestrator {
                 &final_draft,
                 final_verdict.as_deref(),
                 &final_issues,
-                None,
+                reason.as_deref(),
             );
             match create_pending(&self.db, run_id, &payload) {
                 Ok(action_id) => {
                     pending_action_id = Some(action_id);
                     notify_mode = "pending";
                     status = "awaiting_approval";
+                    if stopped_at.is_none() {
+                        stopped_at = Some("notifier".to_string());
+                    }
+                    if reason.is_none() {
+                        reason = Some(format!(
+                            "awaiting human approval for pending action {action_id}"
+                        ));
+                    }
                     let preview = payload["message"]
                         .as_str()
                         .unwrap_or_default()
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let preview: String = preview.chars().take(140).collect();
+                    let preview: String = preview.chars().take(SUMMARY_LIMIT).collect();
                     emitter.emit(
                         "approval_required",
                         json!({
@@ -1023,7 +1001,7 @@ impl Orchestrator {
                     &final_draft,
                     final_verdict.as_deref(),
                     &final_issues,
-                    None,
+                    reason.as_deref(),
                 );
                 emitter.emit(
                     "agent_working",
@@ -1047,10 +1025,14 @@ impl Orchestrator {
                     if let Err(error) = self.db.set_run_status(run_id, status) {
                         tracing::error!(run_id, %error, "could not mark run failed");
                     }
-                    emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                    emitter.emit(
+                        "notifier_failed",
+                        json!({"step": number, "reason": message}),
+                    );
                     json!({"agent": "notifier", "status": "failed", "error": message})
                 } else {
-                    match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds) {
+                    match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds)
+                    {
                         Ok(delivery) => {
                             emitter.emit(
                                 "notifier_sent",
@@ -1086,7 +1068,10 @@ impl Orchestrator {
                             if let Err(error) = self.db.set_run_status(run_id, status) {
                                 tracing::error!(run_id, %error, "could not mark run failed");
                             }
-                            emitter.emit("notifier_failed", json!({"step": number, "reason": message}));
+                            emitter.emit(
+                                "notifier_failed",
+                                json!({"step": number, "reason": message}),
+                            );
                             json!({"agent": "notifier", "status": "failed", "error": message})
                         }
                     }
@@ -1149,7 +1134,7 @@ impl Orchestrator {
         }
         // The reference reports the plan it executed, system steps included.
         for agent in SYSTEM_STEPS {
-            plan.push(PlanStep {
+            plan.push(PlannedStep {
                 agent: agent.to_string(),
                 task: if agent == "logger" {
                     LOGGER_TASK.to_string()
@@ -1163,13 +1148,7 @@ impl Orchestrator {
             status: status.to_string(),
             task,
             planner,
-            plan: plan
-                .iter()
-                .map(|step| PlanStepView {
-                    agent: step.agent.clone(),
-                    task: step.task.clone(),
-                })
-                .collect(),
+            plan,
             outputs: outputs.iter().map(StepResult::to_value).collect(),
             stopped_at,
             reason,
@@ -1211,7 +1190,7 @@ impl Orchestrator {
             .collect();
         let started_at = persistence::now_iso();
         let started = Instant::now();
-        match self.search.search(&query) {
+        match search::search(&self.settings, &query) {
             Err(reason) => {
                 self.record_tool_call(NewToolCall {
                     run_id: run_id.to_string(),
@@ -1367,14 +1346,42 @@ fn resolved_model(settings: &Settings, agent: &str) -> String {
     })
 }
 
+/// One `agent_calls` row from the fields every call site already has.
+#[allow(clippy::too_many_arguments)]
+fn call_row(
+    run_id: &str,
+    step: i64,
+    agent: &str,
+    started_at: String,
+    started: Instant,
+    attempts: i64,
+    tool_turns: i64,
+    model: String,
+    input: &str,
+    output_chars: i64,
+    raw_output: String,
+    error: Option<(&FailureType, &str)>,
+) -> NewAgentCall {
+    NewAgentCall {
+        run_id: run_id.to_string(),
+        step,
+        agent: agent.to_string(),
+        started_at,
+        duration_ms: started.elapsed().as_millis() as i64,
+        attempts,
+        tool_turns,
+        status: if error.is_some() { "failed" } else { "ok" }.to_string(),
+        error_type: error.map(|(kind, _)| kind.as_str().to_string()),
+        error_message: error.map(|(_, message)| message.to_string()),
+        input_chars: input.chars().count() as i64,
+        output_chars,
+        raw_output,
+        model,
+    }
+}
+
 /// Original task + this step's instruction + every earlier validated output.
-fn agent_message(
-    task: &str,
-    _agent: &str,
-    instruction: &str,
-    earlier: &[StepResult],
-    extra: &str,
-) -> String {
+fn agent_message(task: &str, instruction: &str, earlier: &[StepResult], extra: &str) -> String {
     let prior: Vec<Value> = earlier
         .iter()
         .map(|item| json!({"agent": item.agent, "output": item.output}))
@@ -1508,7 +1515,7 @@ mod tests {
     fn summaries_are_capped_with_an_ellipsis() {
         let long = "x".repeat(200);
         let capped = summary("writer", &json!({"draft": long}));
-        assert_eq!(capped.chars().count(), 140);
+        assert_eq!(capped.chars().count(), SUMMARY_LIMIT);
         assert!(capped.ends_with('…'));
     }
 
@@ -1523,7 +1530,7 @@ mod tests {
             output: json!({"agent": "researcher", "summary": "s"}),
             tool_turns: 0,
         }];
-        let message = agent_message("the task", "writer", "the instruction", &earlier, "extra");
+        let message = agent_message("the task", "the instruction", &earlier, "extra");
         assert!(message.starts_with("Original task:\nthe task\n\nYour step instruction:\nthe instruction\n\nOutputs from earlier agents (JSON):\n["));
         assert!(message.contains("\"agent\": \"researcher\""));
         assert!(message.ends_with("\n\nextra"));

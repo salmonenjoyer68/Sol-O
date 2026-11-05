@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::approvals;
-use crate::config::{self, ROOT};
+use crate::config;
 use crate::events::EventBus;
 use crate::http::{router, AppState};
 use crate::orchestrator::Orchestrator;
@@ -351,13 +351,13 @@ fn python_float(value: f64) -> String {
     }
 }
 
-/// `SOL_O_ENV_FILE` selects the dotenv file: unset keeps `<ROOT>/.env`, an
+/// `SOL_O_ENV_FILE` selects the dotenv file: unset keeps `<root>/.env`, an
 /// empty value loads nothing, and any other value loads that path.
 fn env_file() -> Option<PathBuf> {
     match std::env::var_os("SOL_O_ENV_FILE") {
         Some(value) if value.is_empty() => None,
         Some(value) => Some(PathBuf::from(value)),
-        None => Some(Path::new(ROOT).join(".env")),
+        None => Some(config::root().join(".env")),
     }
 }
 

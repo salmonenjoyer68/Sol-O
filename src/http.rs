@@ -18,7 +18,7 @@ use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 use crate::agents::{self, RunError};
 use crate::approvals::{self, ApprovalError};
-use crate::config::{Settings, ROOT};
+use crate::config::{self, Settings};
 use crate::events::{sse_stream, EventBus};
 use crate::orchestrator::Orchestrator;
 use crate::persistence::{self, Db, PendingActionRow, RunDetail, RunRow, SavedEvent};
@@ -48,7 +48,7 @@ impl AppState {
             db,
             bus,
             orchestrator,
-            web_index: PathBuf::from(ROOT).join("web").join("index.html"),
+            web_index: config::root().join("web").join("index.html"),
             keepalive: Duration::from_secs(15),
         }
     }

@@ -3,143 +3,14 @@
 
 mod support;
 
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, ChildStderr, Command, Stdio};
-use std::time::{Duration, Instant};
 
-use regex::Regex;
 use serde_json::{json, Value};
 use support::fake_provider::{FakeProvider, Reply};
+use support::{Server, ROOT};
 use tempfile::TempDir;
 
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const TASK: &str = "Explain online ordering for cafes.";
-
-struct Server {
-    child: Child,
-    _stderr: BufReader<ChildStderr>,
-    base: String,
-}
-
-impl Server {
-    fn start(database: &Path, envs: &[(&str, &str)]) -> Server {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_sol-o"));
-        command.args(["serve", "--host", "127.0.0.1", "--port", "0"]);
-        for name in [
-            "API_KEY",
-            "BASE_URL",
-            "MODEL",
-            "AGENT_MODELS",
-            "LLM_MAX_RETRIES",
-            "LLM_TIMEOUT_SECONDS",
-            "RUN_TIMEOUT_SECONDS",
-            "MAX_AGENTS",
-            "MAX_INPUT_CHARS",
-            "TAVILY_API_KEY",
-            "SOL_O_TAVILY_ENDPOINT",
-            "SOL_O_AGENTS_DIR",
-            "REQUIRE_APPROVAL",
-            "AUTO_APPROVE",
-            "PENDING_TTL_HOURS",
-            "DRY_RUN",
-            "TELEGRAM_BOT_TOKEN",
-            "TELEGRAM_CHAT_ID",
-            "SOL_O_TELEGRAM_ENDPOINT",
-        ] {
-            command.env_remove(name);
-        }
-        command
-            .env("SOL_O_DB", database)
-            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
-            .current_dir(ROOT);
-        for (name, value) in envs {
-            command.env(name, value);
-        }
-        let mut child = command
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sol-o serve");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let mut stderr = BufReader::new(stderr);
-        let pattern = Regex::new(r"address=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+)").unwrap();
-        let address = loop {
-            let mut line = String::new();
-            let read = stderr.read_line(&mut line).expect("read server stderr");
-            assert!(read > 0, "server exited before logging its bound address");
-            if let Some(captures) = pattern.captures(&line) {
-                break captures[1].to_string();
-            }
-        };
-        Server {
-            child,
-            _stderr: stderr,
-            base: format!("http://{address}"),
-        }
-    }
-
-    fn get(&self, path: &str) -> reqwest::blocking::Response {
-        reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("http client")
-            .get(format!("{}{path}", self.base))
-            .send()
-            .expect("GET")
-    }
-
-    fn post(&self, body: &Value) -> reqwest::blocking::Response {
-        reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("http client")
-            .post(format!("{}/orchestrate", self.base))
-            .json(body)
-            .send()
-            .expect("POST /orchestrate")
-    }
-
-    fn wait_for_run(&self, run_id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let response = self.get(&format!("/runs/{run_id}"));
-            assert_eq!(response.status(), 200, "run detail");
-            let detail: Value = response.json().unwrap();
-            let status = detail["run"]["status"].as_str().unwrap_or_default();
-            if status != "running" {
-                return detail;
-            }
-            assert!(Instant::now() < deadline, "run stayed running: {detail}");
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Poll saved events until the run publishes a terminal event.
-    fn wait_for_terminal(&self, run_id: &str) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let saved: Vec<Value> = self
-                .get(&format!("/runs/{run_id}/events"))
-                .json()
-                .expect("saved events");
-            let done = saved
-                .iter()
-                .any(|event| event["event"] == "all_done" || event["event"] == "run_failed");
-            if done || Instant::now() > deadline {
-                return saved;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 fn writer_output() -> String {
     json!({
@@ -191,7 +62,10 @@ fn run_planner(
     let provider = FakeProvider::start(script);
     let server = start_server(&database, &provider, extra);
     let accepted: Value = server
-        .post(&json!({"task": TASK, "use_llm_planner": true}))
+        .post(
+            "/orchestrate",
+            &json!({"task": TASK, "use_llm_planner": true}),
+        )
         .json()
         .unwrap();
     let run_id = accepted["run_id"].as_str().unwrap().to_string();
@@ -429,7 +303,10 @@ fn unusable_planner_output_fails_after_the_retries() {
     assert_eq!(stopped["agent"], "sun");
     assert_eq!(stopped["status"], "failed");
     let reason = stopped["reason"].as_str().unwrap();
-    assert!(reason.starts_with("invalid_json: invalid JSON:"), "{reason}");
+    assert!(
+        reason.starts_with("invalid_json: invalid JSON:"),
+        "{reason}"
+    );
     assert_eq!(
         saved[11]["data"],
         json!({"failed_at": "sun", "error_type": "invalid_json", "message": reason})
@@ -474,8 +351,7 @@ fn a_missing_planner_prompt_fails_the_run() {
 
 #[test]
 fn an_empty_filtered_plan_fails_the_run() {
-    let (_dir, provider, detail, saved) =
-        run_planner(vec![Reply::content(r#"{"steps":[]}"#)], &[]);
+    let (_dir, provider, detail, saved) = run_planner(vec![Reply::content(r#"{"steps":[]}"#)], &[]);
 
     assert_eq!(detail["run"]["status"], "failed");
     assert_eq!(provider.requests().len(), 1, "the planner was called");

@@ -1,11 +1,17 @@
-//! Black-box tests for the planet-requestable kb_search, fetch_url and recall
+//! Unit-level tests for the planet-requestable kb_search, fetch_url and recall
 //! tools: fixture corpus chunking and ranking, fetch refusals, recall scoping,
 //! the rendered tool sections and the audited-handler-failure path.
+//!
+//! Calls the handlers directly (no spawned server), so it does not exercise the
+//! HTTP seam.
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde_json::{json, Value};
+use support::ROOT;
 use tempfile::TempDir;
 
 use sol_o::config::Settings;
@@ -16,8 +22,6 @@ use sol_o::recall::recall;
 use sol_o::reliability::Deadline;
 use sol_o::schemas::ToolRequest;
 use sol_o::toolbox::{has_toolset, Toolset};
-
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 fn fixture_corpus() -> PathBuf {
     Path::new(ROOT).join("rust-tests/fixtures/kb")

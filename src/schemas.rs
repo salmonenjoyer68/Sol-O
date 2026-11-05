@@ -228,24 +228,24 @@ pub fn step_schema(agent: &str) -> Option<serde_json::Value> {
 }
 
 /// Validate one step's output against its per-agent model and return normalized JSON.
-pub fn validate_step_output(agent: &str, value: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn validate_step_output(
+    agent: &str,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let parsed = match agent {
-        "researcher" => serde_json::from_value::<AgentOutput>(value).map(|output| {
-            serde_json::to_value(output).expect("validated output serializes")
-        }),
-        "writer" => serde_json::from_value::<WriterOutput>(value).map(|output| {
-            serde_json::to_value(output).expect("validated output serializes")
-        }),
-        "checker" => serde_json::from_value::<CheckerOutput>(value).map(|output| {
-            serde_json::to_value(output).expect("validated output serializes")
-        }),
+        "researcher" => serde_json::from_value::<AgentOutput>(value)
+            .map(|output| serde_json::to_value(output).expect("validated output serializes")),
+        "writer" => serde_json::from_value::<WriterOutput>(value)
+            .map(|output| serde_json::to_value(output).expect("validated output serializes")),
+        "checker" => serde_json::from_value::<CheckerOutput>(value)
+            .map(|output| serde_json::to_value(output).expect("validated output serializes")),
         _ => return Err(format!("unknown agent: {agent}")),
     };
     parsed.map_err(|error| format!("schema validation failed: {error}"))
 }
 
 /// One planned agent call, mirroring `schemas.PlanStep`.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlannedStep {
     pub agent: String,

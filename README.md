@@ -16,6 +16,7 @@ cp .env.example .env   # fill in BASE_URL, API_KEY, MODEL
 cargo build            # one Rust binary; no Python, no virtualenv, no Node
 ```
 The backend is Rust (`src/`, binary `sol-o`); the UI is the single file `web/index.html`. `app/`, `tools/` and `tests/` are the frozen Python reference implementation the port was verified against — read-only, never built or run.
+The root for `agents/`, `kb/`, `web/`, `data/` and `.env` is the process's working directory; set `SOL_O_ROOT=/path/to/dir` to run a copied binary against that directory instead. `cargo run` and `cargo test` already start in the repo root.
 Model: `BASE_URL` `API_KEY` `MODEL`. Tools: `TAVILY_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID` `DRY_RUN` `TASK_DESCRIPTION`.
 Safety: `LLM_TIMEOUT_SECONDS` `LLM_MAX_RETRIES` `TOOL_TIMEOUT_SECONDS` `RUN_TIMEOUT_SECONDS` `MAX_AGENTS` `REQUIRE_APPROVAL` `AUTO_APPROVE` `PENDING_TTL_HOURS` `MAX_INPUT_CHARS`.
 
@@ -46,4 +47,4 @@ The knowledge base is the committed `kb/` directory; edit it like any other cont
 
 ## Failures
 `cargo run -- show <run_id>`; `GET /runs?status=failed`, `GET /runs/{run_id}` show status, `failed_at`, `failure.error_type` and every call.
-Tests: `cargo test` (`cargo fmt` formats); black-box suites in `rust-tests/` run the real binary against a scripted provider.
+Tests: `cargo test` (`cargo fmt` formats); the integration suites in `rust-tests/` mostly run the real binary against a scripted provider — `stream.rs` and `tools.rs` are unit-level.

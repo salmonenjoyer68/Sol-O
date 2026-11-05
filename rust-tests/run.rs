@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use support::fake_provider::{FakeProvider, Reply};
 use tempfile::TempDir;
 
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+use support::ROOT;
 
 struct Server {
     child: Child,

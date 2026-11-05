@@ -20,10 +20,13 @@ import-time environment snapshot.
 
 Rewrite the backend in Rust and keep the Python tree in the repo, frozen.
 
-- **Shape.** Root `Cargo.toml` + `src/`, one binary `sol-o`. `axum` + `tokio`; the
-  orchestration is a sequential `async fn` per run; `rusqlite` (bundled SQLite) calls run
-  in `spawn_blocking`; SSE fan-out is `tokio::sync::broadcast`; `reqwest` for the provider,
-  Tavily and Telegram; `serde` + `schemars` for the contracts; `clap` for the CLI.
+- **Shape.** Root `Cargo.toml` + `src/`, one binary `sol-o`. `axum` + `tokio`; each
+  orchestration is a blocking `Orchestrator::run` call driven through `spawn_blocking`, so
+  the sequential contract stays a plain function over sync SQLite calls; SSE fan-out is
+  `tokio::sync::broadcast`; `reqwest` for the provider, Tavily and Telegram; `serde` plus
+  hand-written JSON schemas for the contracts; `clap` for the CLI. Schemas are written out
+  rather than derived (`schemars`) because the planner schema needs explicit mutations —
+  the agent enum and the `max_agents` step cap are injected per request.
 - **Scope.** `app/` + `tools/` + the operator CLI move. `agents/*.md`, `kb/*.md` and
   `web/index.html` stay on disk and are read at runtime.
 - **Order.** Bottom-up, one reviewable stage at a time: schemas/reliability/config →
@@ -78,10 +81,11 @@ Shipped. `sol-o serve` defaults to `127.0.0.1:8000`, the port the Python service
 the UI and every client keep their address. The golden diff ran one scripted-provider run
 through both services over HTTP: same run detail, same 23 events in the same order with the
 same fields, the same approval payload and the same post-approval status, once ids,
-timestamps and durations are excluded (the only byte difference is JSON member order inside
-`agent_calls[].raw_output`: Rust stores the validated output re-serialized, the reference
-stores the model's text). The UI's run, replay, approve and reject flows were
-verified against the Rust service at 375, 768 and 1440px. `app/`, `tools/` and `tests/` are
-frozen reference code: nothing builds, tests or runs them any more, and no virtualenv is
-needed for the backend. The throwaway replay harness was never committed, so there was
-nothing to delete.
+timestamps and durations are excluded. Both backends store the validated output
+re-serialized in `agent_calls[].raw_output` (`run.output.model_dump_json()` in Python,
+`serde_json::to_string` here); the only difference is JSON member order, because the
+reference keeps pydantic field order and `serde_json` orders map keys. The UI's run,
+replay, approve and reject flows were verified against the Rust service at 375, 768 and
+1440px. `app/`, `tools/` and `tests/` are frozen reference code: nothing builds, tests or
+runs them any more, and no virtualenv is needed for the backend. The throwaway replay
+harness was never committed, so there was nothing to delete.

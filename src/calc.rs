@@ -582,12 +582,7 @@ fn call_numeric(name: &str, arguments: Vec<Eval>) -> Result<Eval, String> {
                         .chars()
                         .map(|character| Eval::Text(character.to_string()))
                         .collect::<Vec<_>>(),
-                    other => {
-                        return Err(format!(
-                            "'{}' object is not iterable",
-                            type_name(other)
-                        ))
-                    }
+                    other => return Err(format!("'{}' object is not iterable", type_name(other))),
                 }
             } else {
                 arguments
@@ -758,7 +753,9 @@ mod tests {
     use super::*;
 
     fn value(expression: &str) -> String {
-        calculate(expression).expect("expression evaluates").get("value")
+        calculate(expression)
+            .expect("expression evaluates")
+            .get("value")
             .and_then(Value::as_str)
             .expect("value is a string")
             .to_string()
@@ -827,9 +824,15 @@ mod tests {
         assert_eq!(value("'a' + 'b'"), "ab");
         assert_eq!(value("'ab' * 2"), "abab");
         assert!(value("today()").len() == 10);
-        assert_eq!(error("days_between('x','2026-12-01')"), "Invalid isoformat string: 'x'");
+        assert_eq!(
+            error("days_between('x','2026-12-01')"),
+            "Invalid isoformat string: 'x'"
+        );
         assert_eq!(error("today(1)"), "today() takes no arguments");
-        assert_eq!(error("days_between('2026-01-01')"), "days_between() takes two ISO dates");
+        assert_eq!(
+            error("days_between('2026-01-01')"),
+            "days_between() takes two ISO dates"
+        );
         assert_eq!(error("min()"), "min expected at least 1 argument, got 0");
     }
 
