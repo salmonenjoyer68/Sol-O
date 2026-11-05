@@ -47,7 +47,10 @@ impl Server {
         ] {
             command.env_remove(name);
         }
-        command.env("SOL_O_DB", database).current_dir(ROOT);
+        command
+            .env("SOL_O_DB", database)
+            .env("SOL_O_ENV_FILE", support::hermetic_env_file(database))
+            .current_dir(ROOT);
         for (name, value) in envs {
             command.env(name, value);
         }
@@ -101,6 +104,22 @@ impl Server {
             .get(format!("{}{path}", self.base))
             .send()
             .expect("GET")
+    }
+
+    /// Poll saved events until `name` appears; the logger saves the run row
+    /// before the notifier step finishes, so status alone is not a barrier.
+    fn wait_for_event(&self, run_id: &str, name: &str) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let saved: Vec<Value> = self
+                .get(&format!("/runs/{run_id}/events"))
+                .json()
+                .expect("saved events");
+            if saved.iter().any(|event| event["event"] == name) || Instant::now() > deadline {
+                return saved;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn wait_for_run(&self, run_id: &str) -> Value {
@@ -511,7 +530,7 @@ fn auto_approved_runs_send_without_a_pending_row() {
     assert_eq!(detail["pending_actions"], json!([]));
     assert!(server.pending().is_empty());
 
-    let events = server.events(&run_id);
+    let events = server.wait_for_event(&run_id, "all_done");
     let sent = events
         .iter()
         .find(|event| event["event"] == "notifier_sent")
@@ -591,7 +610,7 @@ fn a_pending_action_that_cannot_be_stored_fails_the_run_instead_of_sending() {
     assert_eq!(detail["run"]["status"], "failed");
     assert_eq!(telegram.count(), 0, "never send without a stored approval");
 
-    let events = server.events(&run_id);
+    let events = server.wait_for_event(&run_id, "notifier_failed");
     let failed = events
         .iter()
         .find(|event| event["event"] == "notifier_failed")
