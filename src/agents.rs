@@ -146,6 +146,8 @@ fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
 ///
 /// `on_attempt(call, attempt)` runs before every provider call. `parse` turns
 /// the decoded JSON into the normalized output object or a validation error.
+/// `call_timeout` overrides the configured per-call limit (the Sun passes the
+/// smaller of that limit and the remaining run budget); `None` uses the setting.
 #[allow(clippy::too_many_arguments)]
 pub fn run_validated(
     settings: &Settings,
@@ -155,12 +157,15 @@ pub fn run_validated(
     contract: &str,
     schema: &serde_json::Value,
     parse: &dyn Fn(serde_json::Value) -> Result<serde_json::Value, ParseError>,
+    call_timeout: Option<Duration>,
     on_attempt: &mut dyn FnMut(usize, usize),
 ) -> Result<ValidatedOutput, RunError> {
     let started = Instant::now();
     let system_prompt = load_system_prompt(agents_dir, agent)?;
     let model_override = llm::model_for(settings, agent);
-    let timeout = Duration::from_secs_f64(settings.llm_timeout_seconds.max(0.001));
+    let timeout = call_timeout
+        .unwrap_or_else(|| Duration::from_secs_f64(settings.llm_timeout_seconds))
+        .max(Duration::from_millis(1));
     let max_attempts = 1 + settings.llm_max_retries.max(0) as usize;
 
     let mut messages = vec![
@@ -252,6 +257,7 @@ pub fn run_agent(
         OUTPUT_CONTRACT,
         &schema,
         &parse,
+        None,
         &mut |_, _| {},
     )?;
     let output = serde_json::from_value(validated.output)
