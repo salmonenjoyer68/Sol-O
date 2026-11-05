@@ -139,26 +139,65 @@
 
   #tooltip {
     position: fixed; z-index: 30; pointer-events: none; max-width: 320px;
-    padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45;
-    color: #e8ecff; background: rgba(8, 10, 24, 0.94); border: 1px solid var(--border);
-    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+    padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45;
+    color: #e8ecff; background: rgba(8, 10, 24, 0.86); border: 1px solid var(--border);
+    backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  #tooltip .tip-head { display: flex; align-items: baseline; gap: 8px; }
+  #tooltip .tip-name { font-size: 12.5px; font-weight: 600; }
+  #tooltip .tip-status {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--tone, var(--muted));
+  }
+  #tooltip .tip-summary {
+    display: block; margin-top: 4px; max-width: 280px;
+    font-size: 11.5px; color: var(--muted);
   }
   #panel {
-    /* Sits left of the roster column so the two never overlap. */
-    position: fixed; top: 74px; right: calc(300px + 32px); z-index: 30; width: min(430px, 42vw);
-    max-height: calc(100vh - 120px); display: flex; flex-direction: column;
+    /* Drawer: left of the roster column, above the command bar, and never
+       over the approval gate (see the sibling rule below). */
+    position: fixed; top: 74px; right: calc(300px + 32px); bottom: 136px;
+    z-index: 30; width: min(430px, 42vw);
+    display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
   }
+  /* The gate is a fixed-height card at the bottom; lift the drawer clear of it. */
+  #approval:not(.hidden) ~ #panel { bottom: 224px; }
   #panel header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; align-items: center; gap: 10px;
     padding: 10px 12px; border-bottom: 1px solid var(--border);
     font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #c7d2fe;
   }
+  #panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #panel header button { height: 22px; width: 22px; padding: 0; font-size: 13px; line-height: 1; }
-  #panel-body {
-    margin: 0; padding: 12px; overflow: auto; font-family: var(--font-mono);
-    font-size: 11.5px; line-height: 1.55; color: #cfd8ff; white-space: pre-wrap; word-break: break-word;
+  #panel .chip {
+    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  #panel .chip.called { color: #93c5fd; border-color: rgba(96, 165, 250, 0.5); }
+  #panel .chip.working { color: var(--accent); border-color: rgba(255, 211, 107, 0.55); }
+  #panel .chip.done { color: var(--success); border-color: rgba(74, 222, 128, 0.5); }
+  #panel .chip.failed {
+    color: var(--error); border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(248, 113, 113, 0.12);
+  }
+  #panel-body { padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; color: #cfd8ff; }
+  #panel .fields { margin: 0 0 12px; display: grid; gap: 8px; }
+  #panel .fields div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; }
+  #panel dt {
+    font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); padding-top: 2px;
+  }
+  #panel dd { margin: 0; color: #e6ebff; white-space: pre-wrap; word-break: break-word; }
+  #panel .out-label {
+    display: block; margin-bottom: 6px; font-family: var(--font-mono); font-size: 10px;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  }
+  #panel pre {
+    margin: 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+    color: #cfd8ff; white-space: pre-wrap; word-break: break-word;
   }
 
   /* Agent roster: flat list in the shared glass surface, no nested cards */
@@ -182,9 +221,11 @@
   #roster .empty { margin: 0; padding: 12px; font-size: 12px; line-height: 1.55; color: var(--muted); }
   #roster .row {
     display: grid; grid-template-columns: 9px 1fr; gap: 10px; padding: 9px 12px;
-    border-top: 1px solid rgba(142, 158, 220, 0.12);
+    border-top: 1px solid rgba(142, 158, 220, 0.12); cursor: pointer;
   }
   #roster .row:first-child { border-top: 0; }
+  #roster .row:hover { background: rgba(35, 41, 76, 0.45); }
+  #roster .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   #roster .dot {
     width: 9px; height: 9px; margin-top: 5px; border-radius: 50%;
     background: var(--dot); box-shadow: 0 0 10px var(--dot);
@@ -347,7 +388,7 @@
 </style>
 </head>
 <body>
-<canvas id="sky"></canvas>
+<canvas id="sky" tabindex="-1"></canvas>
 
 <nav id="nav" aria-label="Page">
   <span class="wordmark">Sol-O</span>
@@ -426,9 +467,21 @@
 
 <div id="tooltip" class="hidden"></div>
 
-<div id="panel" class="hidden">
-  <header><span id="panel-title">planet</span><button id="panel-close">×</button></header>
-  <pre id="panel-body"></pre>
+<div id="panel" class="hidden" role="dialog" aria-labelledby="panel-title">
+  <header>
+    <span id="panel-title">planet</span>
+    <span id="panel-status" class="chip"></span>
+    <button id="panel-close" aria-label="Close agent drawer">×</button>
+  </header>
+  <div id="panel-body">
+    <dl class="fields">
+      <div><dt>Role</dt><dd id="panel-role"></dd></div>
+      <div><dt>Task</dt><dd id="panel-task"></dd></div>
+      <div><dt>Duration</dt><dd id="panel-duration"></dd></div>
+    </dl>
+    <span class="out-label">Output</span>
+    <pre id="panel-output">loading…</pre>
+  </div>
 </div>
 
 <aside id="roster" aria-label="Agent roster">
@@ -623,7 +676,11 @@ const rejectBtn = document.getElementById("reject");
 const tooltip = document.getElementById("tooltip");
 const panel = document.getElementById("panel");
 const panelTitle = document.getElementById("panel-title");
-const panelBody = document.getElementById("panel-body");
+const panelStatus = document.getElementById("panel-status");
+const panelRole = document.getElementById("panel-role");
+const panelTask = document.getElementById("panel-task");
+const panelDuration = document.getElementById("panel-duration");
+const panelOutput = document.getElementById("panel-output");
 const panelClose = document.getElementById("panel-close");
 const outputBox = document.getElementById("output");
 const outputTitle = document.getElementById("output-title");
@@ -835,7 +892,9 @@ function renderRoster() {
     const status = row.status;
     const role = AGENT_ROLE[row.agent] || row.task || "agent";
     const state_ = status.toLowerCase();
-    return `<div class="row ${state_}" style="--dot:${row.accent}">` +
+    return `<div class="row ${state_}" style="--dot:${row.accent}" role="button" tabindex="0"` +
+      ` data-step="${row.step}" data-agent="${escapeHtml(row.agent)}"` +
+      ` aria-label="Open ${escapeHtml(row.agent)} details, ${status}">` +
       `<span class="dot"></span><div>` +
       `<div class="nm"><span class="agent">${escapeHtml(row.agent)}</span>` +
       `<span class="chip ${state_}">${status}</span></div>` +
@@ -1379,37 +1438,110 @@ async function showResult(status, data) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Planet detail panel                                                 */
+/* Agent drawer (opened by a planet click or a roster row activation)  */
 /* ------------------------------------------------------------------ */
 
-async function openPlanet(planet) {
-  panel.classList.remove("hidden");
-  panelTitle.textContent = `${planet.agent} · step ${planet.step}`;
-  panelBody.textContent = "loading…";
+let drawerOpener = null;
+let drawerToken = 0;
+
+const STATUS_TONE = {
+  Idle: "#8b95b8", Called: "#93c5fd", Working: "#ffd36b", Done: "#4ade80", Failed: "#f87171",
+};
+
+function planetStatus(planet) {
+  if (planet.failed) return "Failed";
+  if (planet.done) return "Done";
+  if (planet.working) return "Working";
+  return planet.placeholder ? "Idle" : "Called";
+}
+
+/* Role, task and duration come from the same records the roster uses. */
+function drawerFacts(step, agent) {
+  let task = "";
+  let duration = "";
+  let calledAt = 0;
+  let endedAt = 0;
+  (state.records || []).forEach((record) => {
+    const data = record.data || {};
+    const matches = data.agent === agent && (data.step == null || data.step === step);
+    if (record.event === "plan_ready") {
+      const steps = data.steps || [];
+      const item = steps[step - 1] && steps[step - 1].agent === agent
+        ? steps[step - 1]
+        : steps.find((entry) => entry.agent === agent);
+      if (item && item.task) task = item.task;
+    }
+    if (record.event === "agent_called" && matches) calledAt = Date.parse(record.ts);
+    if (record.event === "agent_done" && matches) {
+      endedAt = Date.parse(record.ts);
+      if (data.duration_seconds != null) duration = `${data.duration_seconds}s`;
+    }
+    if (record.event === "agent_failed" && matches) endedAt = Date.parse(record.ts);
+  });
+  if (!duration && calledAt && endedAt && endedAt >= calledAt) {
+    duration = `${((endedAt - calledAt) / 1000).toFixed(1)}s`;
+  }
+  const planet = state.planets.get(`${step}:${agent}`);
+  const status = planet ? planetStatus(planet) : duration ? "Done" : "Called";
+  return { task, duration, status };
+}
+
+async function loadDrawerOutput(step, agent, token) {
+  const planet = state.planets.get(`${step}:${agent}`);
   if (!state.runId) {
-    panelBody.textContent = "No run id yet.";
+    panelOutput.textContent = "No run id yet.";
     return;
   }
   try {
     const detail = await loadRunDetail(!state.outputs || !state.outputs.length);
+    if (token !== drawerToken) return;
     const outputs = (detail.run && detail.run.outputs) || [];
     const found =
-      outputs.find((item) => item.step === planet.step && item.agent === planet.agent) ||
-      outputs.find((item) => item.agent === planet.agent);
-    panelBody.textContent = JSON.stringify(
+      outputs.find((item) => item.step === step && item.agent === agent) ||
+      outputs.find((item) => item.agent === agent);
+    panelOutput.textContent = JSON.stringify(
       found ? (found.output !== undefined ? found.output : found) : {
-        agent: planet.agent,
-        step: planet.step,
-        status: planet.failed ? "failed" : planet.done ? "complete" : "working",
-        summary: planet.summary,
-        error: planet.error || undefined,
+        agent,
+        step,
+        status: planet && planet.failed ? "failed" : planet && planet.done ? "complete" : "working",
+        summary: planet && planet.summary,
+        error: (planet && planet.error) || undefined,
       },
       null,
       2
     );
   } catch (error) {
-    panelBody.textContent = String(error.message || error);
+    if (token !== drawerToken) return;
+    panelOutput.textContent = String(error.message || error);
   }
+}
+
+function openDrawer(step, agent, opener) {
+  drawerOpener = opener || null;
+  const token = ++drawerToken;
+  const facts = drawerFacts(step, agent);
+  const status = facts.status;
+  tooltip.classList.add("hidden");
+  panelTitle.textContent = `${agent} · step ${step}`;
+  panelStatus.textContent = status;
+  panelStatus.className = `chip ${status.toLowerCase()}`;
+  panelRole.textContent = AGENT_ROLE[agent] || facts.task || "agent";
+  panelTask.textContent = facts.task || "—";
+  panelDuration.textContent = facts.duration ||
+    (status === "Working" || status === "Called" ? "in progress" : "—");
+  panelOutput.textContent = "loading…";
+  panel.classList.remove("hidden");
+  panelClose.focus();
+  loadDrawerOutput(step, agent, token);
+}
+
+function closeDrawer() {
+  if (panel.classList.contains("hidden")) return;
+  drawerToken += 1;
+  panel.classList.add("hidden");
+  const opener = drawerOpener;
+  drawerOpener = null;
+  if (opener && opener.isConnected) opener.focus();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1851,11 +1983,19 @@ canvas.addEventListener("mousemove", (event) => {
   }
   state.hover = found;
 
-  if (found && (found.summary || found.error)) {
-    tooltip.textContent = found.error || found.summary;
-    tooltip.style.left = `${event.clientX + 16}px`;
-    tooltip.style.top = `${event.clientY + 16}px`;
+  if (found) {
+    const status = planetStatus(found);
+    const summary = found.error || found.summary;
+    tooltip.innerHTML =
+      `<span class="tip-head"><span class="tip-name">${escapeHtml(found.agent)}</span>` +
+      `<span class="tip-status" style="color:${STATUS_TONE[status]}">${status}</span></span>` +
+      (summary ? `<span class="tip-summary">${escapeHtml(summary)}</span>` : "");
+    tooltip.style.left = "0px";
+    tooltip.style.top = "0px";
     tooltip.classList.remove("hidden");
+    const box = tooltip.getBoundingClientRect();
+    tooltip.style.left = `${clamp(event.clientX + 16, 8, W - box.width - 8)}px`;
+    tooltip.style.top = `${clamp(event.clientY + 16, 8, H - box.height - 8)}px`;
   } else {
     tooltip.classList.add("hidden");
   }
@@ -1867,7 +2007,7 @@ canvas.addEventListener("mouseleave", () => {
 });
 
 canvas.addEventListener("click", () => {
-  if (state.hover) openPlanet(state.hover);
+  if (state.hover) openDrawer(state.hover.step, state.hover.agent, canvas);
 });
 
 canvas.style.cursor = "default";
@@ -1892,7 +2032,7 @@ taskInput.addEventListener("keydown", (event) => {
 replaySelect.addEventListener("change", (event) => replayRun(event.target.value));
 approveBtn.addEventListener("click", () => decide("approve"));
 rejectBtn.addEventListener("click", () => decide("reject"));
-panelClose.addEventListener("click", () => panel.classList.add("hidden"));
+panelClose.addEventListener("click", closeDrawer);
 outputClose.addEventListener("click", () => outputBox.classList.add("hidden"));
 outputReplay.addEventListener("click", () => replayRun(state.runId));
 pill.addEventListener("click", () => {
@@ -1903,6 +2043,22 @@ logToggle.addEventListener("click", () => {
   const hidden = lines.classList.toggle("hidden");
   logToggle.textContent = hidden ? "SHOW" : "HIDE";
   logBox.style.maxHeight = hidden ? "34px" : "190px";
+});
+
+/* Agent drawer: roster rows are the keyboard path to the canvas drawer. */
+rosterRows.addEventListener("click", (event) => {
+  const row = event.target.closest(".row[data-agent]");
+  if (row) openDrawer(Number(row.dataset.step), row.dataset.agent, row);
+});
+rosterRows.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest(".row[data-agent]");
+  if (!row) return;
+  event.preventDefault();
+  openDrawer(Number(row.dataset.step), row.dataset.agent, row);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawer();
 });
 
 /* ------------------------------------------------------------------ */
