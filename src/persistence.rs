@@ -352,6 +352,103 @@ impl Db {
         Ok(())
     }
 
+    /// Store a human decision request; returns its rowid.
+    pub fn create_pending_action(
+        &self,
+        run_id: &str,
+        action_type: &str,
+        payload: &Value,
+    ) -> DbResult<i64> {
+        let payload_json = serde_json::to_string(&redact_value(payload))
+            .map_err(|error| format!("serialize payload: {error}"))?;
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT INTO pending_actions
+                 (run_id, action_type, payload_json, status, created_at, decided_at)
+                 VALUES (?, ?, ?, 'pending', ?, NULL)",
+                rusqlite::params![run_id, action_type, payload_json, now_iso()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    /// Mark stale pending rows expired; returns how many changed.
+    pub fn expire_pending(&self, ttl_hours: f64) -> DbResult<usize> {
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::milliseconds((ttl_hours * 3_600_000.0).round() as i64);
+        let cutoff = cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "UPDATE pending_actions SET status = 'expired', decided_at = ?
+                 WHERE status = 'pending' AND created_at < ?",
+                rusqlite::params![now_iso(), cutoff],
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Unexpired pending actions, oldest first, for `GET /pending`.
+    pub fn list_pending(&self, ttl_hours: f64) -> DbResult<Vec<PendingActionRow>> {
+        self.expire_pending(ttl_hours)?;
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare("SELECT * FROM pending_actions WHERE status = 'pending' ORDER BY id")
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], pending_from_row)
+            .map_err(|error| error.to_string())?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(rows)
+    }
+
+    /// One pending action by id, whatever its status.
+    pub fn get_pending(&self, action_id: i64) -> DbResult<Option<PendingActionRow>> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT * FROM pending_actions WHERE id = ?",
+                rusqlite::params![action_id],
+                pending_from_row,
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })
+    }
+
+    /// Claim a pending action exactly once; the status check lives in the SQL.
+    pub fn claim_pending(
+        &self,
+        action_id: i64,
+        decision: &str,
+        ttl_hours: f64,
+    ) -> DbResult<ClaimOutcome> {
+        self.expire_pending(ttl_hours)?;
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "UPDATE pending_actions SET status = ?, decided_at = ?
+                 WHERE id = ? AND status = 'pending'",
+                rusqlite::params![decision, now_iso(), action_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Ok(match self.get_pending(action_id)? {
+                None => ClaimOutcome::NotFound,
+                Some(row) => ClaimOutcome::Already(row.status),
+            });
+        }
+        match self.get_pending(action_id)? {
+            Some(row) => Ok(ClaimOutcome::Ok(row)),
+            None => Ok(ClaimOutcome::NotFound),
+        }
+    }
+
     /// Newest runs first, optionally filtered by status, for `GET /runs`.
     pub fn recent_runs(&self, limit: i64, status: Option<&str>) -> DbResult<Vec<RunRow>> {
         let connection = self.connect()?;
@@ -666,4 +763,12 @@ pub struct SavedEvent {
     pub ts: String,
     pub event: String,
     pub data: Value,
+}
+
+/// Result of trying to decide a pending action.
+#[derive(Debug)]
+pub enum ClaimOutcome {
+    Ok(PendingActionRow),
+    NotFound,
+    Already(String),
 }

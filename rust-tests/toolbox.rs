@@ -250,7 +250,8 @@ fn an_allowed_tool_runs_and_the_researcher_sees_the_value() {
 
     let (run_id, detail) = run_orchestration(&server);
 
-    assert_eq!(detail["run"]["status"], "complete");
+    let status = detail["run"]["status"].as_str().unwrap();
+    assert!(matches!(status, "complete" | "awaiting_approval"), "run status {status}");
     let calls = detail["agent_calls"].as_array().unwrap();
     let writer = calls.iter().find(|call| call["agent"] == "writer").unwrap();
     assert_eq!(writer["attempts"], 1, "a tool turn is not a validation attempt");
@@ -310,7 +311,8 @@ fn a_tool_outside_the_allowlist_is_a_failed_call_and_never_raises() {
 
     let (run_id, detail) = run_orchestration(&server);
 
-    assert_eq!(detail["run"]["status"], "complete");
+    let status = detail["run"]["status"].as_str().unwrap();
+    assert!(matches!(status, "complete" | "awaiting_approval"), "run status {status}");
     let tools: Vec<&Value> = detail["tool_calls"]
         .as_array()
         .unwrap()
@@ -419,7 +421,8 @@ fn a_requested_limit_is_clamped_before_the_handler_and_the_audit() {
 
     let (run_id, detail) = run_orchestration(&server);
 
-    assert_eq!(detail["run"]["status"], "complete");
+    let status = detail["run"]["status"].as_str().unwrap();
+    assert!(matches!(status, "complete" | "awaiting_approval"), "run status {status}");
     let tools: Vec<&Value> = detail["tool_calls"]
         .as_array()
         .unwrap()
