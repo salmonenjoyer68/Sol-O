@@ -29,7 +29,7 @@ Sol-O is a Python multi-agent orchestration platform. The Sun orchestrator and t
 - `agents/*.md` are agent system prompts, one file per agent, not Python modules. The orchestrator is the "Sun"; agents are "planets". `sun.md` is the planner prompt and is not a runnable planet.
 - `tests/test_run.py` is a manual HTTP client, not a pytest test. Real automated tests belong in `tests/unit/` or `tests/integration/`.
 - `scripts/cron/` is a self-contained TypeScript project (own `package.json`, lockfile, and `node_modules`, which is gitignored). Keep Node tooling there; do not mix it into the Python packages or `tests/`.
-- `web/index.html` is the Phase 6 solar-system UI, served by FastAPI at `/`. Keep it a single self-contained file: no npm, bundler, or CDN libraries.
+- `web/index.html` is the Phase 6 solar-system UI, served by FastAPI at `/`. Keep it a single self-contained file: no npm, bundler, or CDN libraries. Its only external request is one Google Fonts stylesheet, with a system fallback.
 - `data/` is created at runtime for `sol-o.db`; generated files under it are gitignored.
 
 ## Phase 1 contracts
