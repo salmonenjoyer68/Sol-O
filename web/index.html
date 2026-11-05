@@ -25,6 +25,8 @@
     --space-3: 24px;
     --space-6: 48px;
     --nav-h: 56px;
+    /* Measured height of the mobile command bar the sheet stacks above. */
+    --cmdbar-h: 128px;
     --font-ui: "Space Grotesk", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
@@ -181,7 +183,7 @@
   #panel {
     /* Drawer: left of the roster column, above the command bar, and never
        over the approval gate (see the sibling rule below). */
-    position: fixed; top: 74px; right: calc(300px + 32px); bottom: 136px;
+    position: fixed; top: calc(var(--nav-h) + 74px); right: calc(300px + 32px); bottom: 136px;
     z-index: 30; width: min(430px, 42vw);
     display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
@@ -227,7 +229,7 @@
 
   /* Agent roster: flat list in the shared glass surface, no nested cards */
   #roster {
-    position: fixed; right: 16px; top: calc(var(--nav-h) + 74px); bottom: 96px;
+    position: fixed; right: 16px; top: calc(var(--nav-h) + 74px); bottom: 132px;
     width: 300px; z-index: 21; display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0, 0, 0, 0.45);
@@ -294,15 +296,10 @@
     #roster .bar i { transition: none; }
     #roster .row.working .bar i { animation: none; }
   }
-  /* shortcut: the roster is hidden under 900px, where the mobile bottom sheet
-     (ticket #20) replaces it; drop this rule when that sheet lands. */
-  @media (max-width: 900px) {
-    #roster { display: none; }
-    #panel { right: 16px; }
-  }
-
   #output {
-    position: fixed; right: 16px; bottom: 16px; z-index: 26; width: min(460px, 44vw);
+    /* Docked above the command bar and left of the roster, so no HUD panel
+       covers another. The drawer and the result are mutually exclusive. */
+    position: fixed; right: calc(300px + 32px); bottom: 132px; z-index: 26; width: min(460px, 44vw);
     max-height: min(56vh, 520px); display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
@@ -412,6 +409,76 @@
     .hero, .hero.is-gone { transition: none; }
   }
 
+  /* The roster and feed live in one bottom sheet on small screens; on every
+     other width the wrapper disappears and they dock as before. */
+  #sheet, #sheet-body { display: contents; }
+  #sheet .sheet-head { display: none; }
+
+  /* Compact dock: the command bar spans nearly the whole width, so the feed
+     lifts above it and the drawer/result share the space above the feed. */
+  @media (min-width: 768px) and (max-width: 1279.98px) {
+    #log { bottom: 132px; width: min(300px, calc(50vw - 16px)); }
+    #panel { bottom: 336px; }
+    #approval:not(.hidden) ~ #panel { bottom: 336px; }
+    #output {
+      bottom: 336px; width: min(460px, calc(100vw - 348px));
+      max-height: calc(100vh - 466px);
+    }
+  }
+
+  @media (max-width: 767.98px) {
+    #topbar { height: auto; flex-wrap: wrap; padding: 6px 8px; gap: 6px; }
+    .replay-bar { flex: 1 1 100%; }
+    select#replay { flex: 1 1 auto; max-width: none; min-width: 0; }
+    #cmdbar {
+      width: calc(100vw - 16px); bottom: 8px;
+      padding: 10px 12px; gap: 6px 8px;
+    }
+
+    #sheet {
+      position: fixed; left: 8px; right: 8px; z-index: 28;
+      bottom: calc(16px + var(--cmdbar-h));
+      display: flex; flex-direction: column; max-height: 50vh;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      backdrop-filter: blur(10px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    }
+    #sheet .sheet-head { display: flex; align-items: center; gap: 6px; padding: 8px; }
+    #sheet.open .sheet-head { border-bottom: 1px solid var(--border); }
+    #sheet-toggle { flex: 1; min-width: 0; text-align: left; }
+    #sheet .sheet-tabs { display: none; }
+    #sheet.open .sheet-tabs { display: flex; gap: 6px; }
+    #sheet [role="tab"] { height: 30px; padding: 0 12px; }
+    #sheet [role="tab"][aria-selected="true"] {
+      border-color: rgba(255, 211, 107, 0.55); color: var(--accent);
+    }
+    #sheet:not(.open) #sheet-body { display: none; }
+    #sheet-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    #sheet[data-tab="roster"] #log,
+    #sheet[data-tab="feed"] #roster { display: none; }
+
+    /* Dock the panels into the sheet instead of the viewport. */
+    #roster, #log {
+      position: static; width: auto; max-height: none; min-height: 0; flex: 1;
+      border: 0; border-radius: 0 0 14px 14px; background: transparent;
+      box-shadow: none; backdrop-filter: none;
+    }
+    #log .head { display: none; }
+
+    /* Result and drawer become full-screen sheets; the chrome gets out of the way. */
+    #panel, #output {
+      inset: 0; width: auto; max-width: none; max-height: none; border-radius: 0;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    #panel { z-index: 32; }
+    #output { z-index: 34; }
+    #output-body, #panel-body { padding-bottom: 24px; }
+    body.modal-open #nav, body.modal-open #topbar,
+    body.modal-open #cmdbar, body.modal-open #sheet { display: none; }
+
+    #approval { padding: 16px 12px calc(16px + env(safe-area-inset-bottom, 0)); }
+    #approval .card { width: 100%; }
+  }
+
   .hidden { display: none !important; }
 </style>
 </head>
@@ -483,14 +550,6 @@
   <span id="plan-count" class="hidden" aria-live="polite"></span>
 </div>
 
-<div id="log">
-  <div class="head">
-    <span id="log-title">Activity</span>
-    <button id="log-toggle" aria-controls="log-lines" aria-expanded="true">HIDE</button>
-  </div>
-  <div id="log-lines" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="log-title"></div>
-</div>
-
 <div id="approval" class="hidden" role="dialog" aria-modal="true" aria-label="Approval required">
   <div class="card">
     <div class="label">Approval required · nothing has been sent</div>
@@ -521,12 +580,31 @@
   </div>
 </div>
 
-<aside id="roster" aria-label="Agent roster">
-  <div class="rh"><span>Agents</span><span id="roster-count" class="count"></span></div>
-  <div id="roster-rows">
-    <p class="empty">No run yet — planned agents appear here.</p>
+<div id="sheet" data-tab="roster">
+  <div class="sheet-head">
+    <button id="sheet-toggle" type="button" aria-expanded="false" aria-controls="sheet-body">Roster &amp; feed</button>
+    <div class="sheet-tabs" role="tablist" aria-label="Roster and activity">
+      <button id="tab-roster" type="button" role="tab" aria-selected="true" aria-controls="roster">Roster</button>
+      <button id="tab-feed" type="button" role="tab" aria-selected="false" aria-controls="log">Feed</button>
+    </div>
   </div>
-</aside>
+  <div id="sheet-body">
+    <aside id="roster" aria-label="Agent roster">
+      <div class="rh"><span>Agents</span><span id="roster-count" class="count"></span></div>
+      <div id="roster-rows">
+        <p class="empty">No run yet — planned agents appear here.</p>
+      </div>
+    </aside>
+
+    <div id="log">
+      <div class="head">
+        <span id="log-title">Activity</span>
+        <button id="log-toggle" aria-controls="log-lines" aria-expanded="true">HIDE</button>
+      </div>
+      <div id="log-lines" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="log-title"></div>
+    </div>
+  </div>
+</div>
 
 <div id="output" class="hidden" role="region" aria-label="Run result">
   <header><span id="output-title">Result</span><button id="output-close">×</button></header>
@@ -697,6 +775,7 @@ function makeStars() {
 /* ------------------------------------------------------------------ */
 
 const taskInput = document.getElementById("task");
+const cmdbar = document.getElementById("cmdbar");
 const runButton = document.getElementById("run");
 const presets = document.getElementById("presets");
 const planCount = document.getElementById("plan-count");
@@ -728,6 +807,10 @@ const outputClose = document.getElementById("output-close");
 const outputReplay = document.getElementById("output-replay");
 const rosterRows = document.getElementById("roster-rows");
 const rosterCount = document.getElementById("roster-count");
+const sheet = document.getElementById("sheet");
+const sheetToggle = document.getElementById("sheet-toggle");
+const tabRoster = document.getElementById("tab-roster");
+const tabFeed = document.getElementById("tab-feed");
 const hero = document.getElementById("hero");
 
 function hideHero() {
@@ -1074,6 +1157,7 @@ function resetScene() {
   approvalBox.classList.add("hidden");
   panel.classList.add("hidden");
   outputBox.classList.add("hidden");
+  setModal(false);
   planCount.classList.add("hidden");
   renderLog();
   renderRoster();
@@ -1508,7 +1592,9 @@ function lastCheckerIssues(outputs) {
 
 async function showResult(status, data) {
   state.lastResultStatus = status;
+  closeDrawer();
   outputBox.classList.remove("hidden");
+  setModal(true);
   outputBody.textContent = "loading…";
   outputMeta.textContent = String(status).toUpperCase();
 
@@ -1669,6 +1755,8 @@ function openDrawer(step, agent, opener) {
     (status === "Working" || status === "Called" ? "in progress" : "—");
   panelOutput.textContent = "loading…";
   panel.classList.remove("hidden");
+  outputBox.classList.add("hidden");
+  setModal(true);
   panelClose.focus();
   loadDrawerOutput(step, agent, token);
 }
@@ -1677,6 +1765,7 @@ function closeDrawer() {
   if (panel.classList.contains("hidden")) return;
   drawerToken += 1;
   panel.classList.add("hidden");
+  setModal(false);
   const key = drawerOpenerKey;
   let opener = drawerOpener;
   drawerOpener = null;
@@ -2160,6 +2249,32 @@ setInterval(() => {
 }, 250);
 
 /* ------------------------------------------------------------------ */
+/* Mobile bottom sheet (the wrapper is display:contents on wider screens)*/
+/* ------------------------------------------------------------------ */
+
+function syncCmdbarHeight() {
+  // The sheet stacks on the command bar; keep the measured height in a token.
+  document.documentElement.style.setProperty("--cmdbar-h", `${cmdbar.offsetHeight}px`);
+}
+
+function setSheet(open) {
+  sheet.classList.toggle("open", open);
+  sheetToggle.setAttribute("aria-expanded", String(open));
+}
+
+function setSheetTab(name) {
+  sheet.dataset.tab = name;
+  tabRoster.setAttribute("aria-selected", String(name === "roster"));
+  tabFeed.setAttribute("aria-selected", String(name === "feed"));
+}
+
+/* Full-screen result or drawer on small screens; the chrome steps aside. */
+function setModal(open) {
+  document.body.classList.toggle("modal-open", open);
+  syncCmdbarHeight();
+}
+
+/* ------------------------------------------------------------------ */
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -2182,7 +2297,10 @@ replaySpeed.addEventListener("click", toggleReplayRate);
 approveBtn.addEventListener("click", () => decide("approve"));
 rejectBtn.addEventListener("click", () => decide("reject"));
 panelClose.addEventListener("click", closeDrawer);
-outputClose.addEventListener("click", () => outputBox.classList.add("hidden"));
+outputClose.addEventListener("click", () => {
+  outputBox.classList.add("hidden");
+  setModal(false);
+});
 outputReplay.addEventListener("click", () => replayRun(state.runId));
 pill.addEventListener("click", () => {
   if (state.runId && state.lastResultStatus) showResult(state.lastResultStatus);
@@ -2192,6 +2310,10 @@ logToggle.addEventListener("click", () => {
   logToggle.textContent = hidden ? "SHOW" : "HIDE";
   logToggle.setAttribute("aria-expanded", String(!hidden));
 });
+sheetToggle.addEventListener("click", () => setSheet(!sheet.classList.contains("open")));
+tabRoster.addEventListener("click", () => setSheetTab("roster"));
+tabFeed.addEventListener("click", () => setSheetTab("feed"));
+window.addEventListener("resize", syncCmdbarHeight);
 
 /* Agent drawer: roster rows are the keyboard path to the canvas drawer. */
 rosterRows.addEventListener("click", (event) => {
@@ -2206,7 +2328,9 @@ rosterRows.addEventListener("keydown", (event) => {
   openDrawer(Number(row.dataset.step), row.dataset.agent, row);
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeDrawer();
+  if (event.key !== "Escape") return;
+  closeDrawer();
+  setSheet(false);
 });
 
 /* ------------------------------------------------------------------ */
@@ -2216,6 +2340,7 @@ document.addEventListener("keydown", (event) => {
 resize();
 resetScene();
 setSun("idle", "");
+syncCmdbarHeight();
 refreshRuns();
 connectStream();
 startLoop();
