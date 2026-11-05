@@ -121,8 +121,12 @@
   }
   #log .head button { height: 22px; padding: 0 8px; font-size: 12px; }
 
+  /* Blocking gate: full-page scrim above every panel and sheet. */
   #approval {
-    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 25;
+    position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center;
+    padding: 16px 16px 26px; background: rgba(3, 4, 10, 0.66); backdrop-filter: blur(4px);
+  }
+  #approval .card {
     width: min(520px, 92vw); background: var(--surface); border: 1px solid rgba(255,211,107,.5);
     border-radius: 12px; padding: 14px; box-shadow: 0 0 40px rgba(255, 190, 60, 0.15);
     backdrop-filter: blur(10px);
@@ -236,6 +240,19 @@
     max-height: min(56vh, 520px); display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
+    animation: card-in var(--dur-slow) var(--ease);
+  }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(14px); }
+  }
+  #output .actions { display: flex; justify-content: flex-end; padding: 0 12px 12px; }
+  #output .actions button {
+    height: 30px; background: linear-gradient(180deg, #ffd36b, #f2a93b);
+    color: #1a1203; border-color: transparent;
+  }
+  #output .actions button:hover { background: linear-gradient(180deg, #ffd36b, #f2a93b); filter: brightness(1.06); }
+  @media (prefers-reduced-motion: reduce) {
+    #output { animation: none; }
   }
   #output header {
     display: flex; justify-content: space-between; align-items: center;
@@ -396,12 +413,14 @@
   <div id="log-lines"></div>
 </div>
 
-<div id="approval" class="hidden">
-  <div class="label">Approval required · nothing has been sent</div>
-  <div id="approval-preview"></div>
-  <div class="row">
-    <button id="reject">Reject</button>
-    <button id="approve">Approve &amp; send</button>
+<div id="approval" class="hidden" role="dialog" aria-modal="true" aria-label="Approval required">
+  <div class="card">
+    <div class="label">Approval required · nothing has been sent</div>
+    <div id="approval-preview"></div>
+    <div class="row">
+      <button id="reject">Reject</button>
+      <button id="approve">Approve &amp; send</button>
+    </div>
   </div>
 </div>
 
@@ -419,10 +438,11 @@
   </div>
 </aside>
 
-<div id="output" class="hidden">
-  <header><span>Result</span><button id="output-close">×</button></header>
+<div id="output" class="hidden" role="region" aria-label="Run result">
+  <header><span id="output-title">Result</span><button id="output-close">×</button></header>
   <div id="output-meta"></div>
   <div id="output-body"></div>
+  <div class="actions"><button id="output-replay">Replay</button></div>
 </div>
 
 <script>
@@ -542,6 +562,7 @@ const state = {
   alignPhase: null,      // in | hold | out
   alignStart: 0,
   alignAmount: 0,
+  pulseAt: 0,            // Sun's alignment pulse ring, 0 = none
   slowUntil: 0,
   pending: null,
   extraPlanets: 0,
@@ -605,9 +626,11 @@ const panelTitle = document.getElementById("panel-title");
 const panelBody = document.getElementById("panel-body");
 const panelClose = document.getElementById("panel-close");
 const outputBox = document.getElementById("output");
+const outputTitle = document.getElementById("output-title");
 const outputMeta = document.getElementById("output-meta");
 const outputBody = document.getElementById("output-body");
 const outputClose = document.getElementById("output-close");
+const outputReplay = document.getElementById("output-replay");
 const rosterRows = document.getElementById("roster-rows");
 const rosterCount = document.getElementById("roster-count");
 const hero = document.getElementById("hero");
@@ -911,6 +934,7 @@ function resetScene() {
   state.planets.clear();
   state.alignPhase = null;
   state.alignAmount = 0;
+  state.pulseAt = 0;
   state.pending = null;
   state.outputs = null;
   state.outputsRun = null;
@@ -1009,6 +1033,7 @@ function applyEvent(record) {
       state.pending = { id: data.pending_id, preview: data.preview || "" };
       approvalPreview.textContent = data.preview || `Pending action #${data.pending_id}`;
       approvalBox.classList.remove("hidden");
+      approveBtn.focus();
       setSun("awaiting", `pending #${data.pending_id}`);
       break;
     }
@@ -1087,9 +1112,18 @@ function markSkipped() {
 }
 
 function startAlignment() {
+  if (reduceMotion) {
+    // Snap into line, no travel and no pulse ring.
+    state.alignPhase = null;
+    state.alignStart = 0;
+    state.alignAmount = 1;
+    state.pulseAt = 0;
+    return;
+  }
   state.alignPhase = "in";
   state.alignStart = performance.now();
   state.alignAmount = 0;
+  state.pulseAt = state.alignStart;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1300,6 +1334,16 @@ async function showResult(status, data) {
   if (state.runId) bits.push(state.runId.slice(0, 8));
   outputMeta.textContent = bits.join(" · ");
 
+  if (status === "complete") {
+    const done = [...state.planets.values()].filter((planet) => planet.done).length;
+    const count = done || state.plans.length;
+    const elapsed = seconds != null ? ` · ${Math.round(seconds * 10) / 10}s` : "";
+    outputTitle.textContent = `${count ? `All ${count} agents completed` : "Run completed"}${elapsed}`;
+  } else {
+    // Every other outcome keeps the neutral header: never claim success.
+    outputTitle.textContent = "Result";
+  }
+
   let text = "";
   if (status === "complete") {
     text = (run && run.final_draft) || lastWriterDraft(outputs) || "Run completed, but no draft was stored.";
@@ -1435,6 +1479,18 @@ function drawSun(now) {
   ctx.beginPath();
   ctx.arc(CX, CY, core * 5.2, 0, TAU);
   ctx.fill();
+
+  const pulseAge = state.pulseAt ? now - state.pulseAt : Infinity;
+  if (pulseAge >= 0 && pulseAge < 1200 && !reduceMotion) {
+    const t = pulseAge / 1200;
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 214, 120, ${0.6 * (1 - t)})`;
+    ctx.lineWidth = 4 * (1 - t) + 0.8;
+    ctx.beginPath();
+    ctx.arc(CX, CY, core * 1.4 + easeOut(t) * Math.min(W, H) * 0.34, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   ctx.save();
   ctx.translate(CX, CY);
@@ -1838,6 +1894,7 @@ approveBtn.addEventListener("click", () => decide("approve"));
 rejectBtn.addEventListener("click", () => decide("reject"));
 panelClose.addEventListener("click", () => panel.classList.add("hidden"));
 outputClose.addEventListener("click", () => outputBox.classList.add("hidden"));
+outputReplay.addEventListener("click", () => replayRun(state.runId));
 pill.addEventListener("click", () => {
   if (state.runId && state.lastResultStatus) showResult(state.lastResultStatus);
 });
