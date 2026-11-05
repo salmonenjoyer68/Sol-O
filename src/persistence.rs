@@ -13,7 +13,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::ROOT;
-use crate::reliability::redact_value;
+use crate::reliability::{redact, redact_value, truncate};
+
+/// Stored raw model output and tool args are capped, like the reference.
+const MAX_RAW_CHARS: usize = 2000;
 
 pub type DbResult<T> = Result<T, String>;
 
@@ -82,9 +85,71 @@ CREATE TABLE IF NOT EXISTS run_events (
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 "#;
 
+/// UTC timestamp with second precision and a `+00:00` suffix, as stored in rows.
+pub fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+/// A v4 UUID as 32 lowercase hex characters, like `uuid4().hex`.
+pub fn new_run_id() -> String {
+    use std::io::Read;
+
+    let mut bytes = [0_u8; 16];
+    let mut source = std::fs::File::open("/dev/urandom").ok();
+    let filled = source
+        .as_mut()
+        .map(|file| file.read_exact(&mut bytes).is_ok())
+        .unwrap_or(false);
+    if !filled {
+        // No entropy device: fall back to a time-and-counter scramble.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = (nanos >> ((index % 8) * 8)) as u8 ^ (index as u8).wrapping_mul(37);
+        }
+    }
+    // Version 4, RFC 4122 variant.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct Db {
     path: PathBuf,
+}
+
+/// One `agent_calls` audit row.
+#[derive(Clone, Debug)]
+pub struct NewAgentCall {
+    pub run_id: String,
+    pub step: i64,
+    pub agent: String,
+    pub started_at: String,
+    pub duration_ms: i64,
+    pub attempts: i64,
+    pub tool_turns: i64,
+    pub status: String,
+    pub error_type: Option<String>,
+    pub error_message: Option<String>,
+    pub input_chars: i64,
+    pub output_chars: i64,
+    pub raw_output: String,
+    pub model: String,
+}
+
+/// One `tool_calls` audit row.
+#[derive(Clone, Debug)]
+pub struct NewToolCall {
+    pub run_id: String,
+    pub tool: String,
+    pub started_at: String,
+    pub duration_ms: i64,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub args: String,
 }
 
 impl Db {
@@ -143,6 +208,145 @@ impl Db {
             .execute(
                 "INSERT INTO run_events (run_id, seq, ts, event, data_json) VALUES (?, ?, ?, ?, ?)",
                 rusqlite::params![run_id, seq, ts, event, payload],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Insert or replace a `running` row before execution starts.
+    pub fn start_run(&self, run_id: &str, task: &str, source: &str) -> DbResult<()> {
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO runs
+                 (id, created_at, task, status, final_draft, verdict, outputs_json,
+                  duration_seconds, warning, source)
+                 VALUES (?, ?, ?, 'running', '', NULL, '[]', 0.0, NULL, ?)",
+                rusqlite::params![run_id, now_iso(), redact(task), redact(source)],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Insert or update the finished run; never touches `task`, `created_at` or `source`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_run(
+        &self,
+        run_id: &str,
+        task: &str,
+        status: &str,
+        final_draft: &str,
+        verdict: Option<&str>,
+        outputs: &Value,
+        duration_seconds: f64,
+        warning: Option<&str>,
+    ) -> DbResult<()> {
+        let outputs_json = serde_json::to_string(&redact_value(outputs))
+            .map_err(|error| format!("serialize outputs: {error}"))?;
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT INTO runs
+                 (id, created_at, task, status, final_draft, verdict, outputs_json,
+                  duration_seconds, warning)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   status = excluded.status,
+                   final_draft = excluded.final_draft,
+                   verdict = excluded.verdict,
+                   outputs_json = excluded.outputs_json,
+                   duration_seconds = excluded.duration_seconds,
+                   warning = excluded.warning",
+                rusqlite::params![
+                    run_id,
+                    now_iso(),
+                    redact(task),
+                    status,
+                    redact(final_draft),
+                    verdict,
+                    outputs_json,
+                    round2(duration_seconds),
+                    warning,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_run_status(&self, run_id: &str, status: &str) -> DbResult<()> {
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "UPDATE runs SET status = ? WHERE id = ?",
+                rusqlite::params![status, run_id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Audit one agent step. Callers tolerate failures: auditing never fails a run.
+    pub fn save_agent_call(&self, call: &NewAgentCall) -> DbResult<()> {
+        let error_message = call
+            .error_message
+            .as_deref()
+            .filter(|message| !message.is_empty())
+            .map(redact);
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT INTO agent_calls
+                 (run_id, step, agent, started_at, duration_ms, attempts, tool_turns,
+                  status, error_type, error_message, input_chars, output_chars,
+                  raw_output, model)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    call.run_id,
+                    call.step,
+                    call.agent,
+                    call.started_at,
+                    call.duration_ms,
+                    call.attempts,
+                    call.tool_turns,
+                    call.status,
+                    call.error_type,
+                    error_message,
+                    call.input_chars,
+                    call.output_chars,
+                    truncate(&redact(&call.raw_output), MAX_RAW_CHARS),
+                    redact(&call.model),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Audit one tool execution. Callers tolerate failures.
+    pub fn save_tool_call(&self, call: &NewToolCall) -> DbResult<()> {
+        let error_message = call
+            .error_message
+            .as_deref()
+            .filter(|message| !message.is_empty())
+            .map(redact);
+        let args = if call.args.is_empty() {
+            String::new()
+        } else {
+            truncate(&redact(&call.args), MAX_RAW_CHARS)
+        };
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT INTO tool_calls
+                 (run_id, tool, started_at, duration_ms, status, error_message, args)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    call.run_id,
+                    call.tool,
+                    call.started_at,
+                    call.duration_ms,
+                    call.status,
+                    error_message,
+                    args,
+                ],
             )
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -370,6 +574,10 @@ fn table_columns(connection: &Connection, table: &str) -> rusqlite::Result<HashS
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<HashSet<_>>>()?;
     Ok(names)
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 fn expand_home(raw: &str) -> PathBuf {

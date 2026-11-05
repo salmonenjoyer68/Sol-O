@@ -6,6 +6,8 @@ pub mod config;
 pub mod events;
 pub mod http;
 pub mod llm;
+pub mod orchestrator;
 pub mod persistence;
 pub mod reliability;
+pub mod search;
 pub mod schemas;

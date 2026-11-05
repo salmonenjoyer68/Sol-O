@@ -21,6 +21,9 @@ pub const OUTPUT_CONTRACT: &str = "\n\n## Runtime output contract (highest prior
 
 pub const RETRY_INSTRUCTION: &str = "Your previous response could not be used: {error}\n\nReturn the corrected, complete JSON object only. No prose and no markdown fences.";
 
+/// Appended to orchestration steps; `/run` uses [`OUTPUT_CONTRACT`] instead.
+pub const STEP_CONTRACT: &str = "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nUse the exact keys from your output format above. Do not add, rename, or omit keys.\n- agent: your own name.\n- status: \"complete\", \"partial\", or \"needs_clarification\".\n- clarification_needed: one question when status is \"needs_clarification\", otherwise null.\nUse only the allowed enum values.\n";
+
 static AGENT_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+$").expect("static agent name pattern is valid"));
 
@@ -73,9 +76,27 @@ pub struct AgentOutcome {
 }
 
 #[derive(Debug)]
-struct ParseError {
-    failure_type: FailureType,
-    message: String,
+pub struct ParseError {
+    pub failure_type: FailureType,
+    pub message: String,
+}
+
+impl ParseError {
+    pub fn new(failure_type: FailureType, message: impl Into<String>) -> Self {
+        Self {
+            failure_type,
+            message: message.into(),
+        }
+    }
+}
+
+/// The normalized JSON output of one validated agent call.
+#[derive(Debug, Clone)]
+pub struct ValidatedOutput {
+    pub output: serde_json::Value,
+    /// Validation attempts; the successful call counts.
+    pub attempts: usize,
+    pub duration_ms: i64,
 }
 
 /// Read `<agents_dir>/<agent>.md` on every request.
@@ -93,48 +114,66 @@ fn load_system_prompt(agents_dir: &Path, agent: &str) -> Result<String, RunError
     }
 }
 
-/// Strip optional markdown fences, parse JSON and validate the contract.
-fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
+/// Strip optional markdown fences and parse the payload.
+fn decode(raw: &str) -> Result<serde_json::Value, ParseError> {
     let text = raw.trim();
     let text = FENCE
         .captures(text)
         .and_then(|captures| captures.get(1))
         .map(|body| body.as_str().trim())
         .unwrap_or(text);
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|error| ParseError {
-        failure_type: FailureType::InvalidJson,
-        message: format!("invalid JSON: {error}"),
-    })?;
-    serde_json::from_value(value).map_err(|error| ParseError {
-        failure_type: FailureType::SchemaMismatch,
-        message: format!("schema validation failed: {error}"),
+    serde_json::from_str(text).map_err(|error| {
+        ParseError::new(
+            FailureType::InvalidJson,
+            format!("invalid JSON: {error}"),
+        )
+    })
+}
+
+/// Strip fences, parse JSON and validate against the `/run` contract.
+#[cfg(test)]
+fn parse_output(raw: &str) -> Result<AgentOutput, ParseError> {
+    let value = decode(raw)?;
+    serde_json::from_value(value).map_err(|error| {
+        ParseError::new(
+            FailureType::SchemaMismatch,
+            format!("schema validation failed: {error}"),
+        )
     })
 }
 
 /// Call the provider, validate, and retry malformed output up to `LLM_MAX_RETRIES`.
-pub fn run_agent(
+///
+/// `on_attempt(call, attempt)` runs before every provider call. `parse` turns
+/// the decoded JSON into the normalized output object or a validation error.
+#[allow(clippy::too_many_arguments)]
+pub fn run_validated(
     settings: &Settings,
     agents_dir: &Path,
     agent: &str,
-    task: &str,
-) -> Result<AgentOutcome, RunError> {
+    user_content: &str,
+    contract: &str,
+    schema: &serde_json::Value,
+    parse: &dyn Fn(serde_json::Value) -> Result<serde_json::Value, ParseError>,
+    on_attempt: &mut dyn FnMut(usize, usize),
+) -> Result<ValidatedOutput, RunError> {
     let started = Instant::now();
     let system_prompt = load_system_prompt(agents_dir, agent)?;
-    let schema = agent_output_schema();
     let model_override = llm::model_for(settings, agent);
     let timeout = Duration::from_secs_f64(settings.llm_timeout_seconds.max(0.001));
     let max_attempts = 1 + settings.llm_max_retries.max(0) as usize;
 
     let mut messages = vec![
-        Message::new("system", format!("{system_prompt}{OUTPUT_CONTRACT}")),
-        Message::new("user", task),
+        Message::new("system", format!("{system_prompt}{contract}")),
+        Message::new("user", user_content),
     ];
     let mut attempts = 0_usize;
     loop {
+        on_attempt(attempts + 1, attempts + 1);
         let raw = match llm::call_llm(
             settings,
             &messages,
-            Some(&schema),
+            Some(schema),
             timeout,
             model_override.as_deref(),
         ) {
@@ -152,9 +191,9 @@ pub fn run_agent(
                 }));
             }
         };
-        match parse_output(&raw) {
+        match decode(&raw).and_then(|value| parse(value)) {
             Ok(output) => {
-                return Ok(AgentOutcome {
+                return Ok(ValidatedOutput {
                     output,
                     attempts: attempts + 1,
                     duration_ms: started.elapsed().as_millis() as i64,
@@ -185,6 +224,43 @@ pub fn run_agent(
             }
         }
     }
+}
+
+/// `/run`: one file-backed agent validated against the full [`AgentOutput`] contract.
+pub fn run_agent(
+    settings: &Settings,
+    agents_dir: &Path,
+    agent: &str,
+    task: &str,
+) -> Result<AgentOutcome, RunError> {
+    let schema = agent_output_schema();
+    let parse = |value: serde_json::Value| {
+        serde_json::from_value::<AgentOutput>(value)
+            .map(|output| serde_json::to_value(output).expect("validated output serializes"))
+            .map_err(|error| {
+                ParseError::new(
+                    FailureType::SchemaMismatch,
+                    format!("schema validation failed: {error}"),
+                )
+            })
+    };
+    let validated = run_validated(
+        settings,
+        agents_dir,
+        agent,
+        task,
+        OUTPUT_CONTRACT,
+        &schema,
+        &parse,
+        &mut |_, _| {},
+    )?;
+    let output = serde_json::from_value(validated.output)
+        .expect("run_validated returns a validated AgentOutput");
+    Ok(AgentOutcome {
+        output,
+        attempts: validated.attempts,
+        duration_ms: validated.duration_ms,
+    })
 }
 
 #[cfg(test)]

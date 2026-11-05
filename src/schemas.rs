@@ -78,6 +78,28 @@ pub struct RunRequest {
     pub task: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestrationRequest {
+    pub task: String,
+    #[serde(default)]
+    pub use_llm_planner: bool,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboundRequest {
+    pub message: String,
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "unknown".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
@@ -97,6 +119,113 @@ pub struct AgentOutput {
     pub conflicts: Vec<String>,
     pub gaps: Vec<String>,
     pub clarification_needed: NullableString,
+}
+
+/// Strict JSON contract for the writer step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriterOutput {
+    pub agent: String,
+    pub status: Status,
+    pub draft: String,
+    pub facts_used: Vec<String>,
+    pub notes: String,
+    pub clarification_needed: NullableString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Approved,
+    NeedsChanges,
+}
+
+/// One problem found by the checker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckerIssue {
+    pub problem: String,
+    pub location: String,
+    pub suggestion: String,
+}
+
+/// Strict JSON contract for the checker step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckerOutput {
+    pub agent: String,
+    pub status: Status,
+    pub verdict: Verdict,
+    pub issues: Vec<CheckerIssue>,
+    pub clarification_needed: NullableString,
+}
+
+/// The provider schema an orchestration step asks for, or `None` for unknown agents.
+pub fn step_schema(agent: &str) -> Option<serde_json::Value> {
+    match agent {
+        "researcher" => Some(agent_output_schema()),
+        "writer" => Some(serde_json::json!({
+            "title": "WriterOutput",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "agent", "status", "draft", "facts_used", "notes", "clarification_needed"
+            ],
+            "properties": {
+                "agent": {"type": "string"},
+                "status": {"type": "string", "enum": STATUS_VALUES},
+                "draft": {"type": "string"},
+                "facts_used": {"type": "array", "items": {"type": "string"}},
+                "notes": {"type": "string"},
+                "clarification_needed": {"type": ["string", "null"]}
+            }
+        })),
+        "checker" => Some(serde_json::json!({
+            "title": "CheckerOutput",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "agent", "status", "verdict", "issues", "clarification_needed"
+            ],
+            "properties": {
+                "agent": {"type": "string"},
+                "status": {"type": "string", "enum": STATUS_VALUES},
+                "verdict": {"type": "string", "enum": ["approved", "needs_changes"]},
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["problem", "location", "suggestion"],
+                        "properties": {
+                            "problem": {"type": "string"},
+                            "location": {"type": "string"},
+                            "suggestion": {"type": "string"}
+                        }
+                    }
+                },
+                "clarification_needed": {"type": ["string", "null"]}
+            }
+        })),
+        _ => None,
+    }
+}
+
+/// Validate one step's output against its per-agent model and return normalized JSON.
+pub fn validate_step_output(agent: &str, value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let parsed = match agent {
+        "researcher" => serde_json::from_value::<AgentOutput>(value).map(|output| {
+            serde_json::to_value(output).expect("validated output serializes")
+        }),
+        "writer" => serde_json::from_value::<WriterOutput>(value).map(|output| {
+            serde_json::to_value(output).expect("validated output serializes")
+        }),
+        "checker" => serde_json::from_value::<CheckerOutput>(value).map(|output| {
+            serde_json::to_value(output).expect("validated output serializes")
+        }),
+        _ => return Err(format!("unknown agent: {agent}")),
+    };
+    parsed.map_err(|error| format!("schema validation failed: {error}"))
 }
 
 /// Strict provider-side schema for the first rung of the response-format ladder.
