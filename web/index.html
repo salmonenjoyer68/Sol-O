@@ -88,9 +88,17 @@
   }
   #run:hover { filter: brightness(1.06); }
   select#replay {
-    height: 34px; max-width: 250px; border-radius: 8px; border: 1px solid var(--border);
+    height: 34px; max-width: 250px; min-width: 0; border-radius: 8px; border: 1px solid var(--border);
     background: rgba(8, 10, 24, 0.85); color: var(--fg); font-size: 12px; padding: 0 8px;
   }
+  .replay-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #replay-controls { display: flex; align-items: center; gap: 6px; }
+  #replay-controls button {
+    height: 28px; padding: 0 10px; font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  #replay-pause { min-width: 66px; }
+  #replay-pause[aria-pressed="true"] { border-color: rgba(255, 211, 107, 0.55); color: var(--accent); }
   .pill {
     height: 26px; display: inline-flex; align-items: center; padding: 0 12px;
     border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.14em;
@@ -437,7 +445,13 @@
 
 <div id="topbar">
   <span id="pill" class="pill">IDLE</span>
-  <select id="replay"><option value="">Replay a run…</option></select>
+  <div class="replay-bar">
+    <div id="replay-controls" class="hidden" role="group" aria-label="Replay controls">
+      <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
+      <button id="replay-speed" type="button" aria-pressed="false" aria-label="Replay speed">1x</button>
+    </div>
+    <select id="replay"><option value="">Replay a run…</option></select>
+  </div>
 </div>
 
 <div id="cmdbar" role="search" aria-label="Start a run">
@@ -633,7 +647,6 @@ const state = {
   lastStopReason: "",
   lastFailure: null,
   lastResultStatus: null,
-  replayTimers: [],
   lastRunStatus: null,
 };
 
@@ -669,6 +682,9 @@ const presets = document.getElementById("presets");
 const planCount = document.getElementById("plan-count");
 const pill = document.getElementById("pill");
 const replaySelect = document.getElementById("replay");
+const replayControls = document.getElementById("replay-controls");
+const replayPause = document.getElementById("replay-pause");
+const replaySpeed = document.getElementById("replay-speed");
 const logLines = document.getElementById("log-lines");
 const logToggle = document.getElementById("log-toggle");
 const logBox = document.getElementById("log");
@@ -868,6 +884,15 @@ window.SolO = {
   },
   accent(agent) {
     return styleFor(String(agent)).color;
+  },
+  replay() {
+    return {
+      active: !replayControls.classList.contains("hidden"),
+      paused: replayPlayer.paused,
+      rate: replayPlayer.rate,
+      index: replayPlayer.index,
+      total: replayPlayer.records.length,
+    };
   },
 };
 
@@ -1256,9 +1281,92 @@ async function startRun() {
   }
 }
 
+/* Replay playback. One chained timer instead of a burst: pausing stops the
+   single pending event and resuming re-arms it with its remaining delay, so
+   no record is skipped or applied twice. */
+const REPLAY_GAP_CAP = 1500;
+
+const replayPlayer = {
+  records: [],
+  index: 0,          // index of the next record to apply
+  timer: 0,
+  paused: false,
+  dueAt: 0,
+  remaining: 0,
+  rate: 1,
+};
+
 function clearReplayTimers() {
-  state.replayTimers.forEach((timer) => clearTimeout(timer));
-  state.replayTimers = [];
+  if (replayPlayer.timer) clearTimeout(replayPlayer.timer);
+  replayPlayer.timer = 0;
+  replayPlayer.records = [];
+  replayPlayer.index = 0;
+  replayPlayer.paused = false;
+  replayPlayer.remaining = 0;
+  setReplayControls(false);
+}
+
+function setReplayControls(visible) {
+  replayControls.classList.toggle("hidden", !visible);
+  syncReplayControls();
+}
+
+function syncReplayControls() {
+  replayPause.textContent = replayPlayer.paused ? "Resume" : "Pause";
+  replayPause.setAttribute("aria-pressed", String(replayPlayer.paused));
+  replaySpeed.textContent = `${replayPlayer.rate}x`;
+  replaySpeed.setAttribute("aria-pressed", String(replayPlayer.rate === 2));
+}
+
+function scheduleReplayStep(delay) {
+  replayPlayer.remaining = delay;
+  replayPlayer.dueAt = performance.now() + delay;
+  replayPlayer.timer = setTimeout(runReplayStep, delay);
+}
+
+function runReplayStep() {
+  replayPlayer.timer = 0;
+  replayPlayer.remaining = 0;
+  const record = replayPlayer.records[replayPlayer.index];
+  if (!record) return;
+  replayPlayer.index += 1;
+  applyEvent(record);
+  if (replayPlayer.index >= replayPlayer.records.length) {
+    setReplayControls(false);
+    return;
+  }
+  scheduleReplayStep(replayGap(replayPlayer.index));
+}
+
+function replayGap(index) {
+  const current = replayPlayer.records[index];
+  const previous = replayPlayer.records[index - 1];
+  const delta = Date.parse(current.ts) - Date.parse(previous.ts);
+  const gap = Number.isFinite(delta) ? clamp(delta, 0, REPLAY_GAP_CAP) : 0;
+  return gap / replayPlayer.rate;   // 2x halves the 1500ms cap and every gap
+}
+
+function pauseReplay() {
+  if (replayPlayer.paused) return;
+  replayPlayer.paused = true;
+  replayPlayer.remaining = replayPlayer.timer
+    ? Math.max(0, replayPlayer.dueAt - performance.now())
+    : 0;
+  if (replayPlayer.timer) clearTimeout(replayPlayer.timer);
+  replayPlayer.timer = 0;
+  syncReplayControls();
+}
+
+function resumeReplay() {
+  if (!replayPlayer.paused) return;
+  replayPlayer.paused = false;
+  syncReplayControls();
+  scheduleReplayStep(replayPlayer.remaining);
+}
+
+function toggleReplayRate() {
+  replayPlayer.rate = replayPlayer.rate === 1 ? 2 : 1;
+  syncReplayControls();
 }
 
 async function replayRun(runId) {
@@ -1280,21 +1388,9 @@ async function replayRun(runId) {
       pill.textContent = "REPLAY · EMPTY";
       return;
     }
-    let elapsed = 0;
-    let previous = null;
-    records.forEach((record) => {
-      let gap = 0;
-      if (previous) {
-        const delta = Date.parse(record.ts) - Date.parse(previous.ts);
-        gap = Number.isFinite(delta) ? clamp(delta, 0, 1500) : 0;
-      }
-      previous = record;
-      elapsed += gap;
-      const timer = setTimeout(() => {
-        applyEvent(record);
-      }, elapsed);
-      state.replayTimers.push(timer);
-    });
+    replayPlayer.records = records;
+    setReplayControls(true);
+    scheduleReplayStep(0);
   } catch (error) {
     pill.textContent = "REPLAY · ERROR";
     pill.className = "pill failed";
@@ -2041,6 +2137,11 @@ taskInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") startRun();
 });
 replaySelect.addEventListener("change", (event) => replayRun(event.target.value));
+replayPause.addEventListener("click", () => {
+  if (replayPlayer.paused) resumeReplay();
+  else pauseReplay();
+});
+replaySpeed.addEventListener("click", toggleReplayRate);
 approveBtn.addEventListener("click", () => decide("approve"));
 rejectBtn.addEventListener("click", () => decide("reject"));
 panelClose.addEventListener("click", closeDrawer);
