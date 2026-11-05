@@ -53,5 +53,9 @@ name = "approvals"
 path = "rust-tests/approvals.rs"
 
 [[test]]
+name = "planner"
+path = "rust-tests/planner.rs"
+
+[[test]]
 name = "toolbox"
 path = "rust-tests/toolbox.rs"

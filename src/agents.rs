@@ -25,6 +25,12 @@ pub const RETRY_INSTRUCTION: &str = "Your previous response could not be used: {
 /// Appended to orchestration steps; `/run` uses [`OUTPUT_CONTRACT`] instead.
 pub const STEP_CONTRACT: &str = "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nUse the exact keys from your output format above. Do not add, rename, or omit keys.\n- agent: your own name.\n- status: \"complete\", \"partial\", or \"needs_clarification\".\n- clarification_needed: one question when status is \"needs_clarification\", otherwise null.\nUse only the allowed enum values.\n";
 
+/// The planner is a planet like any other, but never plans itself.
+pub const PLANNER_AGENT: &str = "sun";
+
+/// Appended to the planner call; the plan shape must match `SunPlan`.
+pub const PLAN_CONTRACT: &str = "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nShape: {\"steps\": [{\"agent\": \"<agent id>\", \"task\": \"<instruction>\"}]}\n- 1 to 7 steps, executed in order.\n- Every agent must come from the available agents list in the user message.\n- Do not add extra keys.\n";
+
 static AGENT_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+$").expect("static agent name pattern is valid"));
 
@@ -102,6 +108,11 @@ pub struct ValidatedOutput {
     pub attempts: usize,
     pub tool_turns: usize,
     pub duration_ms: i64,
+}
+
+/// A file-safe agent id, like `AGENT_NAME_RE.fullmatch`.
+pub fn valid_agent_name(name: &str) -> bool {
+    AGENT_NAME.is_match(name)
 }
 
 /// Read `<agents_dir>/<agent>.md` on every request.
