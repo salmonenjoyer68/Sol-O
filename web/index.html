@@ -140,7 +140,8 @@
     box-shadow: 0 6px 24px rgba(0,0,0,.5);
   }
   #panel {
-    position: fixed; top: 74px; right: 16px; z-index: 30; width: min(430px, 42vw);
+    /* Sits left of the roster column so the two never overlap. */
+    position: fixed; top: 74px; right: calc(300px + 32px); z-index: 30; width: min(430px, 42vw);
     max-height: calc(100vh - 120px); display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
@@ -154,6 +155,80 @@
   #panel-body {
     margin: 0; padding: 12px; overflow: auto; font-family: var(--font-mono);
     font-size: 11.5px; line-height: 1.55; color: #cfd8ff; white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Agent roster: flat list in the shared glass surface, no nested cards */
+  #roster {
+    position: fixed; right: 16px; top: calc(var(--nav-h) + 74px); bottom: 96px;
+    width: 300px; z-index: 21; display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0, 0, 0, 0.45);
+  }
+  #roster .rh {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  #roster .rh .count {
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 400;
+    letter-spacing: 0.04em; text-transform: none; color: var(--muted);
+  }
+  #roster-rows { overflow: auto; flex: 1; }
+  #roster .empty { margin: 0; padding: 12px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+  #roster .row {
+    display: grid; grid-template-columns: 9px 1fr; gap: 10px; padding: 9px 12px;
+    border-top: 1px solid rgba(142, 158, 220, 0.12);
+  }
+  #roster .row:first-child { border-top: 0; }
+  #roster .dot {
+    width: 9px; height: 9px; margin-top: 5px; border-radius: 50%;
+    background: var(--dot); box-shadow: 0 0 10px var(--dot);
+  }
+  #roster .nm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #roster .agent { font-size: 13px; font-weight: 600; }
+  #roster .role {
+    margin-top: 1px; font-size: 12px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #roster .chip {
+    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  #roster .chip.called { color: #93c5fd; border-color: rgba(96, 165, 250, 0.5); }
+  #roster .chip.working { color: var(--accent); border-color: rgba(255, 211, 107, 0.55); }
+  #roster .chip.done { color: var(--success); border-color: rgba(74, 222, 128, 0.5); }
+  #roster .chip.failed {
+    color: var(--error); border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(248, 113, 113, 0.12);
+  }
+  #roster .bar {
+    margin-top: 7px; height: 3px; border-radius: 2px;
+    background: rgba(142, 158, 220, 0.16); overflow: hidden;
+  }
+  #roster .bar i {
+    display: block; height: 100%; width: 0; border-radius: 2px; background: var(--dot);
+    transition: width var(--dur-slow) var(--ease);
+  }
+  #roster .row.failed .bar i { background: var(--error); }
+  #roster .row.working .bar i {
+    background: linear-gradient(90deg, transparent, var(--dot), transparent);
+    background-size: 200% 100%; animation: roster-shimmer 1.2s linear infinite;
+  }
+  @keyframes roster-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -100% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #roster .bar i { transition: none; }
+    #roster .row.working .bar i { animation: none; }
+  }
+  /* shortcut: the roster is hidden under 900px, where the mobile bottom sheet
+     (ticket #20) replaces it; drop this rule when that sheet lands. */
+  @media (max-width: 900px) {
+    #roster { display: none; }
+    #panel { right: 16px; }
   }
 
   #output {
@@ -337,6 +412,13 @@
   <pre id="panel-body"></pre>
 </div>
 
+<aside id="roster" aria-label="Agent roster">
+  <div class="rh"><span>Agents</span><span id="roster-count" class="count"></span></div>
+  <div id="roster-rows">
+    <p class="empty">No run yet — planned agents appear here.</p>
+  </div>
+</aside>
+
 <div id="output" class="hidden">
   <header><span>Result</span><button id="output-close">×</button></header>
   <div id="output-meta"></div>
@@ -464,6 +546,7 @@ const state = {
   pending: null,
   extraPlanets: 0,
   log: [],
+  records: [],           // every event applied for the current run (roster source)
   hover: null,
   outputs: null,
   outputsRun: null,
@@ -525,6 +608,8 @@ const outputBox = document.getElementById("output");
 const outputMeta = document.getElementById("output-meta");
 const outputBody = document.getElementById("output-body");
 const outputClose = document.getElementById("output-close");
+const rosterRows = document.getElementById("roster-rows");
+const rosterCount = document.getElementById("roster-count");
 const hero = document.getElementById("hero");
 
 function hideHero() {
@@ -704,6 +789,40 @@ window.SolO = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Roster panel (renders window.SolO's view model; no second derivation)*/
+/* ------------------------------------------------------------------ */
+
+const AGENT_ROLE = {
+  researcher: "Research", writer: "Draft", checker: "Review",
+  logger: "Log", notifier: "Notify",
+};
+const ROSTER_FILL = { Idle: 0, Called: 25, Working: 60, Done: 100, Failed: 100 };
+
+function renderRoster() {
+  const rows = window.SolO.roster(state.records);
+  const { completed, total } = window.SolO.progress(state.records);
+  rosterCount.textContent = total ? `${completed} / ${total} steps` : "";
+  if (!rows.length) {
+    rosterRows.innerHTML = '<p class="empty">' + (state.records.length
+      ? "Waiting for the plan…"
+      : "No run yet — planned agents appear here.") + "</p>";
+    return;
+  }
+  rosterRows.innerHTML = rows.map((row) => {
+    const status = row.status;
+    const role = AGENT_ROLE[row.agent] || row.task || "agent";
+    const state_ = status.toLowerCase();
+    return `<div class="row ${state_}" style="--dot:${row.accent}">` +
+      `<span class="dot"></span><div>` +
+      `<div class="nm"><span class="agent">${escapeHtml(row.agent)}</span>` +
+      `<span class="chip ${state_}">${status}</span></div>` +
+      `<div class="role">${escapeHtml(role.slice(0, 46))}</div>` +
+      `<div class="bar"><i style="width:${ROSTER_FILL[status]}%"></i></div>` +
+      `</div></div>`;
+  }).join("");
+}
+
+/* ------------------------------------------------------------------ */
 /* Planets                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -803,11 +922,13 @@ function resetScene() {
   state.lastResultStatus = null;
   state.extraPlanets = 0;
   state.log = [];
+  state.records = [];
   approvalBox.classList.add("hidden");
   panel.classList.add("hidden");
   outputBox.classList.add("hidden");
   planCount.classList.add("hidden");
   renderLog();
+  renderRoster();
   setSun("idle", "");
 }
 
@@ -952,6 +1073,8 @@ function applyEvent(record) {
       break;
   }
   pushLog(name, data);
+  state.records.push(record);
+  renderRoster();
 }
 
 function markSkipped() {
