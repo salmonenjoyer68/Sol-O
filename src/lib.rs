@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod approvals;
+pub mod calc;
 pub mod cli;
 pub mod config;
 pub mod events;
@@ -13,3 +14,4 @@ pub mod reliability;
 pub mod schemas;
 pub mod search;
 pub mod telegram;
+pub mod toolbox;

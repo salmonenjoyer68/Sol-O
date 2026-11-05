@@ -21,6 +21,7 @@ use crate::reliability::{redact, truncate, Deadline};
 use crate::schemas::{self, step_schema};
 use crate::search::{SearchTool, TavilySearch};
 use crate::telegram::{self, TelegramError};
+use crate::toolbox::{has_toolset, Toolset};
 
 pub const DEFAULT_PLAN: [&str; 3] = ["researcher", "writer", "checker"];
 pub const SYSTEM_STEPS: [&str; 2] = ["logger", "notifier"];
@@ -322,6 +323,19 @@ impl Orchestrator {
                 );
             };
 
+            let tool_emit = |event: &str, data: Value| emitter.emit(event, data);
+            let toolset = has_toolset(&step.agent).then(|| {
+                Toolset::new(
+                    &self.settings,
+                    &self.db,
+                    &tool_emit,
+                    &step.agent,
+                    number,
+                    run_id,
+                    source,
+                    deadline,
+                )
+            });
             // Each call gets the smaller of the configured limit and what is
             // left of the run budget.
             let call_timeout = Duration::from_secs_f64(
@@ -338,6 +352,7 @@ impl Orchestrator {
                 STEP_CONTRACT,
                 &schema,
                 &parse,
+                toolset.as_ref(),
                 Some(call_timeout),
                 &mut on_attempt,
             );
@@ -364,7 +379,7 @@ impl Orchestrator {
                         &error.detail,
                         &error.raw,
                         error.attempts,
-                        0,
+                        error.tool_turns as i64,
                     );
                     self.record_agent_call(NewAgentCall {
                         run_id: run_id.to_string(),
@@ -422,7 +437,7 @@ impl Orchestrator {
                 started_at,
                 duration_ms: step_started.elapsed().as_millis() as i64,
                 attempts: validated.attempts as i64,
-                tool_turns: 0,
+                tool_turns: validated.tool_turns as i64,
                 status: "ok".to_string(),
                 error_type: None,
                 error_message: None,
@@ -447,7 +462,7 @@ impl Orchestrator {
                 attempts: validated.attempts as i64,
                 duration_seconds,
                 output: validated.output,
-                tool_turns: 0,
+                tool_turns: validated.tool_turns as i64,
             });
             emitter.emit(
                 "agent_done",
@@ -456,7 +471,7 @@ impl Orchestrator {
                     "agent": step.agent,
                     "status": step_status,
                     "attempts": validated.attempts,
-                    "tool_turns": 0,
+                    "tool_turns": validated.tool_turns,
                     "duration_seconds": duration_seconds,
                     "summary": summary,
                 }),
