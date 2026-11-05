@@ -133,6 +133,22 @@ pub struct WriterOutput {
     pub clarification_needed: NullableString,
 }
 
+/// One tool a planet asks the Sun to run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequest {
+    pub tool: String,
+    #[serde(default)]
+    pub args: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The envelope a planet returns to ask the Sun to run tools.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequests {
+    pub tool_requests: Vec<ToolRequest>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
