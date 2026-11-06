@@ -1,0 +1,20 @@
+//! Sol-O: solar-system multi-agent orchestrator.
+
+pub mod agents;
+pub mod approvals;
+pub mod calc;
+pub mod cli;
+pub mod config;
+pub mod events;
+pub mod fetch;
+pub mod http;
+pub mod kb;
+pub mod llm;
+pub mod orchestrator;
+pub mod persistence;
+pub mod recall;
+pub mod reliability;
+pub mod schemas;
+pub mod search;
+pub mod telegram;
+pub mod toolbox;

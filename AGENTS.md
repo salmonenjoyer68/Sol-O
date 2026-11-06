@@ -1,96 +1,134 @@
 # AGENTS.md
 
-Sol-O is a Python multi-agent orchestration platform. The Sun orchestrator and the Phase 1-6 features live in `app/` and `tools/`; the browser UI is the single file `web/index.html`. Write real implementation code, not scaffolds.
+Sol-O is a multi-agent orchestration platform. The backend is Rust: one binary, `sol-o`,
+built from `src/`. The browser UI is the single file `web/index.html`. Write real
+implementation code, not scaffolds.
+
+`app/`, `tools/` and `tests/` are the **frozen Python reference implementation** (see
+[Frozen reference](#frozen-reference)). They are not built, not tested, and not imported by
+anything the Rust backend runs.
 
 ## Setup
 
-- Repo lives in WSL/Linux. Activate the checked-in venv with `source .venv/bin/activate`; it is Python 3.12, laid out for Linux. The README's Windows activation path does not apply.
-- Dependencies are split:
-  - `uv sync` installs `pyproject.toml` deps (`langchain`, `langchain-openai`) — **Phase 1 does not use them**.
-  - `pip install -r requirements.txt` installs the Phase 1 runtime: `fastapi`, `uvicorn`, `openai`, `pydantic`, `python-dotenv`.
-- `pytest` and `ruff` are **not** installed in `.venv` (and `pytest` is not declared in `pyproject.toml`). Install them or use `uvx`.
-- `cp .env.example .env`; `app/llm.py` reads `BASE_URL`, `API_KEY`, `MODEL` from the repo-root `.env` **once at import time**. Restart the server after editing `.env`; prompt edits need no restart.
-- Run Python commands from the repo root. `app` and `tools` are top-level packages run from the repo root; the project itself is not installed into site-packages. The TypeScript utility is the exception: run it from `scripts/cron/`.
+- Rust stable, edition 2021. No virtualenv, no Python and no Node are needed to build, test
+  or run the backend. The root — where `agents/`, `kb/`, `web/`, `data/` and `.env` live —
+  is resolved at runtime: `SOL_O_ROOT` overrides it, otherwise the process's current
+  directory is used. `cargo run` and `cargo test` start in the repo root, so the checkout
+  layout works unchanged; point `SOL_O_ROOT` at a directory to run a copied binary against
+  its own files.
+- `cp .env.example .env` and fill `BASE_URL`, `API_KEY`, `MODEL`. Tools want
+  `TAVILY_API_KEY` and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`; `DRY_RUN` defaults to true.
+- The binary loads `.env` once at startup (`dotenvy`, from the repo root). `SOL_O_ENV_FILE`
+  selects another file; an empty value loads nothing. Restart after editing `.env`; prompt
+  edits (`agents/*.md`) need no restart — they are read per request.
+- `SOL_O_DB` overrides the SQLite file (default `data/sol-o.db`, created on first run).
 
 ## Commands
 
-- API: `uvicorn app.main:app --reload` (open `http://127.0.0.1:8000/` for the live solar-system UI; `GET /stream` is the SSE feed)
-- CLI: `python -m app.cli "your task" [--plan] [--file path] [--source <conversation>]`; also `--show <run_id>`, `--pending`, `--approve <id>`, `--reject <id>` (with no task it reads `TASK_DESCRIPTION` from `.env`).
-- Terminal client: `python -m tests.test_run "your task"` (posts to `http://127.0.0.1:8000/run`; override with `SOL_O_URL`). Requires the API to be running.
-- Tests: `python -m pytest` after `pip install pytest`. `testpaths = ["tests"]`; put tests in `tests/unit/` or `tests/integration/`. With no real test functions, `pytest` exits 5 ("no tests ran").
-- Lint: `uvx ruff check .` (config: `line-length = 100`, `target-version = "py310"`).
-- Cron utility (standalone TypeScript): `cd scripts/cron && npm test` (vitest); `npx tsc --noEmit` typechecks.
-- No CI, pre-commit, Makefile, tox, or nox. Do not assume a pipeline exists.
+- Serve: `cargo run -- serve` → `http://127.0.0.1:8000/` (UI), `GET /stream` (SSE).
+  `--host` and `--port` override the defaults; the Rust service owns port 8000.
+- Run a task: `cargo run -- run "your task" [--plan] [--file examples/inquiry.txt]
+  [--source <conversation>]`. With no task it reads `TASK_DESCRIPTION` from the environment.
+- Inspect: `cargo run -- show <run_id>`, `cargo run -- pending`,
+  `cargo run -- approve <id>`, `cargo run -- reject <id>`.
+- Tests: `cargo test`. Unit tests live in `#[cfg(test)]` modules beside the code;
+  `rust-tests/*.rs` are integration suites. Most spawn the real binary against
+  `rust-tests/support/fake_provider.rs` (a scripted OpenAI-compatible provider), sharing
+  `rust-tests/support/`. Two are unit-level: `stream.rs` builds the router in-process
+  (keepalive timing is not a binary setting) and `tools.rs` calls the handlers directly.
+  Fixtures are in `rust-tests/fixtures/`.
+- Format: `cargo fmt` (optional lint: `cargo clippy --all-targets`); `cargo fmt --check`
+  is clean. There is no CI, pre-commit, Makefile or tox; do not assume a pipeline exists.
 
-## Layout and architecture
+## Layout
 
-- Code lives in `app/`: `main.py` (FastAPI: `/run`, `/orchestrate`, `/runs`, `/runs/{id}`, `/inbound`, `/pending`, `/stream`, `/`), `cli.py` (terminal entry point), `agents.py` (prompt loading, validation, retries), `orchestrator.py` (the Sun), `logger.py` (SQLite runs/calls/pending/events), `events.py` (event bus + SSE), `approvals.py` (approval gate), `config.py` (env settings), `reliability.py` (retries, deadline, redaction), `llm.py`, `schemas.py`. `app/` must stay importable as `app`.
-- `tools/` holds the code-run tools: `search.py` (Tavily), `telegram.py` (Bot API), and the planet-requestable `kb.py`, `fetch.py`, `calc.py` and `recall.py`. `app/toolbox.py` registers them, declares each planet's allowlist in `AGENT_TOOLS`, and renders the tool section of every planet's system prompt. `tests/` holds pytest tests plus the manual `test_run.py` HTTP client.
-- `agents/*.md` are agent system prompts, one file per agent, not Python modules. The orchestrator is the "Sun"; agents are "planets". `sun.md` is the planner prompt and is not a runnable planet.
-- `tests/test_run.py` is a manual HTTP client, not a pytest test. Real automated tests belong in `tests/unit/` or `tests/integration/`.
-- `scripts/cron/` is a self-contained TypeScript project (own `package.json`, lockfile, and `node_modules`, which is gitignored). Keep Node tooling there; do not mix it into the Python packages or `tests/`.
-- `web/index.html` is the Phase 6 solar-system UI, served by FastAPI at `/`. Keep it a single self-contained file: no npm, bundler, or CDN libraries. Its only external request is one Google Fonts stylesheet, with a system fallback.
-- `data/` is created at runtime for `sol-o.db`; generated files under it are gitignored.
+- `src/main.rs` starts `tracing` on stderr and calls `src/cli.rs`; `src/lib.rs` lists the
+  modules. `src/http.rs` is the axum router, `src/cli.rs` the `clap` subcommands,
+  `src/orchestrator.rs` the Sun, `src/agents.rs` prompt loading/validation/retries,
+  `src/toolbox.rs` the tool registry, allowlists and result budget, `src/persistence.rs` the
+  SQLite schema and queries, `src/events.rs` the bus and SSE stream, `src/approvals.rs` the
+  approval gate, `src/config.rs` settings, `src/llm.rs` the provider client,
+  `src/reliability.rs` retries/deadline/redaction, `src/schemas.rs` the wire contracts. Tool
+  handlers: `src/kb.rs` (`kb_search`), `src/fetch.rs` (`fetch_url`), `src/calc.rs` (`calc`),
+  `src/recall.rs` (`recall`), plus Sun-side `src/search.rs` (Tavily) and `src/telegram.rs`.
+- `agents/*.md` are agent system prompts, one file per agent. The orchestrator is the Sun;
+  agents are planets. `sun.md` is the planner prompt and is not a runnable planet.
+- `kb/` is the committed knowledge base read by `kb_search`; `rust-tests/` are the
+  integration suites; `examples/` holds sample tasks.
+- `scripts/cron/` is a standalone TypeScript utility with its own `package.json`. Keep Node
+  tooling there; the backend never touches it.
 
-## Phase 1 contracts
+## Contracts a change must keep
 
-- `app/schemas.py` is authoritative. All models use `extra="forbid"`; `status` is `complete | partial | needs_clarification`, `confidence` is `high | medium | low`.
-- The researcher output contract is duplicated in **three** places: `app/schemas.py`, `OUTPUT_CONTRACT` in `app/agents.py`, and the output-format section of `agents/researcher.md`. Changing fields or enum values requires updating all three.
-- `POST /run`: loads `agents/<agent>.md` per request (name must match `^[A-Za-z0-9_-]+$`, else 404), appends `OUTPUT_CONTRACT`, then calls the LLM. Markdown fences are stripped before JSON parsing.
-- Validation failures are retried twice (3 attempts total) with the error fed back to the model; final failure returns `502 {"error": "invalid_agent_output", "raw": ...}`.
-- Errors: 404 unknown agent; 502 `llm_error` for provider/config failures (including missing env vars); 504 `llm_timeout` after 30 s.
-- `agents/researcher.md` has no web search tool of its own: the Sun runs Tavily and injects the results. Through the tool envelope it may request `kb_search`, `fetch_url` and `recall`; the rendered tool section is the only source of allowed names. When results are empty, the researcher must mark claims `unverified`.
-- The tool envelope is `{"tool_requests": [{"tool": <name>, "args": {...}}]}` (no `status` key), modelled by `ToolRequests` in `app/schemas.py` and stated in `TOOL_CONTRACT_TEMPLATE` in `app/toolbox.py`, which is appended to every runnable planet's system prompt. The schema and the runtime contract must agree; the prompt files defer to the runtime contract for the envelope and `AGENT_TOOLS` alone decides which names are allowed for each planet. Each result keeps `tool`, `ok` and `truncated`; an oversized result is trimmed to `MAX_RESULT_CHARS` (string clipped, list tail dropped then last item clipped, dict's longest text field clipped, never replaced by a placeholder) and a requested `limit` is clamped into 1..`MAX_RESULT_ITEMS` before the handler runs and before it is audited. The envelope's `truncated` is true whenever any layer capped the content, including a tool that reports its own truncation.
+- **Routes** (11, all in `src/http.rs`): `GET /`, `POST /run`, `POST /orchestrate`,
+  `POST /inbound`, `GET /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`,
+  `GET /stream`, `GET /pending`, `POST /pending/{id}/approve`, `POST /pending/{id}/reject`.
+  Status codes and the exact `error` codes (`agent_not_found`, `agent_unreadable`,
+  `llm_timeout`, `llm_error`, `invalid_agent_output`, `run_not_found`, `not_found`,
+  `conflict`, `execution_failed`, `ui_unreadable`, `invalid_request`, `database_error`) are
+  part of the contract. CORS admits localhost origins only.
+- **Events**: `{run_id, seq, ts, event, data}` with a per-run increasing `seq`, stored in
+  `run_events` and streamed over SSE with `Last-Event-ID` backlog replay and a 15 s
+  keepalive. Names and fields are fixed: `run_started`, `plan_ready`, `agent_called`,
+  `agent_working`, `tool_requested`, `tool_done`, `agent_done`, `agent_failed`,
+  `revision_requested`, `search_done`, `search_failed`, `logger_saved`,
+  `logger_failed`, `approval_required`, `awaiting_approval`, `notifier_pending`,
+  `notifier_sent`, `notifier_skipped`, `notifier_failed`, `approval_decided`, `all_done`,
+  `run_failed`, `stopped`. The UI reads only these; renaming one breaks it.
+- **Database**: five tables — `runs`, `agent_calls`, `tool_calls`, `pending_actions`,
+  `run_events` — with the exact columns in `src/persistence.rs`. `ensure_columns` upgrades an
+  older `sol-o.db` in place, so an existing file must keep working. Timestamps are ISO-8601
+  UTC with second precision; run ids are 32 lowercase hex characters.
+- **Prompts**: the runtime output contracts are plain strings in `src/agents.rs`
+  (`OUTPUT_CONTRACT`, `STEP_CONTRACT`, `PLAN_CONTRACT`) appended to the prompt file, and
+  `agents/*.md` documents the same shape as a JSON example. `src/schemas.rs` is
+  authoritative; changing an output field means updating the schema, the contract strings
+  and the prompt file together, or the model is told two different things.
+- **Tool envelope**: `{"tool_requests": [{"tool": "<name>", "args": {...}}]}` with no
+  `status` key. `agent_tool_names` in `src/toolbox.rs` is the only source of allowed names
+  (researcher: `kb_search`, `fetch_url`, `recall`; writer: `kb_search`, `calc`, `recall`;
+  checker: `kb_search`, `calc`). Each result keeps `tool`, `ok`, `truncated`; the
+  result budget (`MAX_RESULT_CHARS`, `MAX_RESULT_ITEMS`) and `MAX_ARGS_CHARS` come from
+  `src/config.rs` and are never hardcoded elsewhere.
+- **Approval gate**: with `REQUIRE_APPROVAL=true` and `AUTO_APPROVE=false`, a run that is
+  ready to notify stops as `awaiting_approval` with one `pending_actions` row and sends
+  nothing. Approve executes the stored message exactly once and restores the stored
+  `run_status`; reject sets `rejected`; actions expire after `PENDING_TTL_HOURS` and cannot
+  be decided twice.
+- **Two allowed deviations from the reference**: the validation-error text fed back to the
+  model is Rust-shaped, and log lines are `tracing` records instead of `INFO:sol_o.sun:…`.
+  Everything else — payload shapes, event names and fields, truncation limits, `calc`
+  arithmetic, ISO formats — is parity-locked.
+- `web/index.html` stays a single self-contained file (vanilla JS + Canvas): no npm, bundler
+  or CDN. Its only external request is one Google Fonts stylesheet with a system fallback.
 
-## Phase 2/3 contracts
+## Conventions
 
-- `app/orchestrator.py` is authoritative for the Sun. `DEFAULT_PLAN = ("researcher", "writer", "checker")`; `MAX_STEPS = 7` LLM steps; `use_llm_planner=True` plans through `agents/sun.md` with `PLAN_CONTRACT`.
-- Runnable LLM planets are the intersection of `agents/*.md` and `AGENT_OUTPUT_MODELS` (`AgentOutput`, `WriterOutput`, `CheckerOutput`). Adding one means a prompt file, a schema, and an entry in that dict.
-- `checker` may not run before `writer` (`REQUIRED_PRIOR_AGENTS`).
-- Each step gets the original task plus all earlier validated outputs. A step that exhausts its 3 attempts stops the run; the result keeps prior outputs.
-- Checker loop: `verdict == "needs_changes"` appends one writer revision and one checker rerun. A second `needs_changes` ends the run with `status="partial"` and the issues preserved. Never loop twice.
-- `logger` and `notifier` are code-only system steps in `SYSTEM_STEPS`, always appended after the LLM plan, in that order, on every run (success, failure, or clarification). The planner never sees them.
-- `app/logger.py` stores one row per run in `data/sol-o.db` (`SOL_O_DB` overrides). It inserts a `running` row at start so `/inbound` run ids resolve immediately, then updates it at the end. Logging never crashes a run.
-- `OrchestrationResult.status` is `complete | partial | failed | needs_clarification | awaiting_approval | rejected` (distinct from `AgentOutput.status`); `planner` is `hardcoded | llm`; `run_id` is the DB row id. Failed runs also carry `failed_at` and `failure` (`FailureType`: `invalid_json`, `schema_mismatch`, `timeout`, `llm_error`, `tool_error`) with `raw_output` truncated to 2000 chars.
-- `POST /orchestrate` queues the run via `BackgroundTasks` and returns `{"run_id", "status": "accepted"}` immediately so the browser can stream it live; read the outcome from `GET /runs/{run_id}`. `POST /inbound` behaves the same with `202 {"run_id", "status": "accepted"}`. Both return `2xx` even when the run stops early — check the stored `status`, `stopped_at`. `GET /runs?limit=20` returns newest rows with `outputs` parsed from `outputs_json`.
-- All progress events go through `emit()` in `app/orchestrator.py`; it logs with timestamps and forwards to the Phase 6 event bus (`app/events.py`) bound to the run id.
+- Keep the reference's semantics when editing `src/`: codepoint-based truncation, Python's
+  `//`, `%`, int/float promotion and `round(v, 6)` in `calc`, `json.dumps(default=str)` for
+  fallback serialization.
+- Settings live in `src/config.rs` and are read once at process start. Tests are hermetic:
+  point `SOL_O_ENV_FILE` at an empty file and `SOL_O_DB` at a temp path so a developer `.env`
+  never reaches a test.
+- `.env` is gitignored; never commit secrets. `.env.example` is the tracked template. `data/`
+  contents are gitignored.
 
-## Phase 4/5 contracts
+## Frozen reference
 
-- `app/config.py` loads `.env` once into `settings`: `LLM_TIMEOUT_SECONDS` (30), `LLM_MAX_RETRIES` (2), `TOOL_TIMEOUT_SECONDS` (15), `RUN_TIMEOUT_SECONDS` (180), `MAX_AGENTS` (7), `REQUIRE_APPROVAL` (true), `AUTO_APPROVE` (false), `PENDING_TTL_HOURS` (24), `MAX_INPUT_CHARS` (8000), `AGENT_MODELS` (empty; comma-separated `agent=model` overrides parsed once at load, malformed or unknown-agent entries skipped with a warning, `MODEL` is the fallback), `MAX_TOOL_TURNS` (3), `MAX_RESULT_CHARS` (6000), `MAX_RESULT_ITEMS` (10), `MAX_ARGS_CHARS` (500). Never hardcode these values elsewhere.
-- `app/reliability.py` owns `call_with_retries` (1s/2s/4s backoff), `Deadline`, `redact`, and the root-handler `RedactFilter`. LLM retries only timeout/connection/429/5xx; 4xx fails immediately. Tools retry once on timeout/5xx. Redaction covers env secrets, `sk-...`, `bot<id>:...` and bearer tokens, including httpx request URLs.
-- The whole run uses `RUN_TIMEOUT_SECONDS`; exhaustion yields `status="failed"`, `reason="run_timeout"`, `error_type="timeout"`. Per-call timeout is `min(LLM_TIMEOUT_SECONDS, remaining)`.
-- Tasks over `MAX_INPUT_CHARS` are truncated and the run row/result carry `warning`.
-- `agent_calls` (one row per LLM call, including the planner at step 0) and `tool_calls` (search, Telegram and planet-requested tool calls) are written even on failure. `GET /runs/{id}` returns run + calls + pending actions; `GET /runs?status=` filters.
-- Approval gate: irreversible notifications are gated when `REQUIRE_APPROVAL=true` and `AUTO_APPROVE=false`. Successful/partial/clarification runs stop as `awaiting_approval` with a `pending_actions` row and no send; failed runs skip the notifier and stay `failed`. Approve executes the stored message exactly once (dry-run still prints) and restores the stored `run_status`; reject sets `rejected`. Actions expire after `PENDING_TTL_HOURS` and cannot be decided twice.
-- `tools/` holds code-run tools: `search.py` (Tavily over httpx, `TAVILY_API_KEY`), `telegram.py` (Bot API, `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, `DRY_RUN` default true), and the planet-requestable `kb.py`, `fetch.py`, `calc.py` and `recall.py`. The Sun executes tool requests; the model only asks.
-
-## Phase 6 contracts
-
-- `app/events.py` is an in-memory bus: events are `{run_id, seq, ts, event, data}` with a per-run increasing `seq` (plus a process-wide `id` used as the SSE event id). `emit()` binds to the run via the `run_context` ContextVar; publishing redacts secrets and writes every event to the `run_events` table in `app/logger.py`.
-- Real events: `run_started{task}`, `plan_ready{agents, planner, steps}`, `agent_called{step, agent}`, `agent_working{step, agent, attempt, call}` (once per LLM call, plus search and Telegram; `call` is the 1-based LLM call index including tool turns, while `attempt` is the validation-attempt number and excludes tool turns), `tool_requested{step, agent, tool}`, `tool_done{step, agent, tool, ok, ms, truncated, chars}`, `agent_done{step, agent, status, attempts, tool_turns, duration_seconds, summary (<=140 chars)}`, `agent_failed{step, agent, error_type, message, attempts, tool_turns}`, `awaiting_approval{pending_id, preview}`, `approval_decided{pending_id, decision, run_status}`, `all_done{status, seconds}` (complete/partial/clarification) and `run_failed{failed_at, error_type, message}`. `awaiting_approval` runs emit no terminal event until the approval is decided.
-- API: `GET /stream` is SSE (`text/event-stream`) for all runs, keepalive every 15 s, backlog replay from the `Last-Event-ID` header, one queue per tab. `GET /runs/{run_id}/events` returns saved events for replay. `GET /` serves the single-file UI. CORS is localhost/127.0.0.1 only.
-- UI: `web/index.html` is one self-contained file (vanilla JS + Canvas, no build/CDN). It is driven only by real events; local motion is cosmetic (orbits, twinkle, glow, alignment easing). Clicking a planet reads its output from `GET /runs/{run_id}`; replay fetches saved events and caps every inter-event gap at 1.5 s. A result window auto-opens on `all_done`, `run_failed` or `approval_decided`, showing the final draft, clarification, failure or rejection, and can be reopened by clicking the status pill.
-
-## Conventions and gotchas
-
-- `requires-python = ">=3.10"` and ruff targets `py310`, but the checked-in venv is 3.12. Do not use 3.11+ syntax or stdlib (`tomllib`, `ExceptionGroup`, `StrEnum`, `typing.Self`); `X | None` is fine at 3.10.
-- Match existing style: `from __future__ import annotations` first, double quotes, 4-space indent, concise docstrings, small pure helpers (`parse_agent_output`, `load_system_prompt`).
-- Phase 1 is plain Python plus the `openai` SDK and `httpx` for tools. Do not introduce LangChain or another agent framework despite the `pyproject.toml` deps. Runtime deps go in `requirements.txt`; `httpx` is also in `pyproject.toml` so `uv run python -m app.cli` works.
-- `data/` contents are gitignored (the runtime SQLite database). Do not commit generated outputs.
-- `.env` is gitignored; never commit secrets. `.env.example` is the tracked template.
-- Project principles that affect design: keep agents single-purpose, validate outputs between stages, and require human approval before irreversible/high-impact actions.
+`app/` (FastAPI backend), `tools/` (tool handlers) and `tests/` (pytest suite plus the manual
+`tests/test_run.py` HTTP client) are the Python implementation the Rust backend was ported
+from, kept so behaviour can be read and compared. Treat them as read-only: no features, no
+contract changes, no new dependencies. They are a reading aid, not a fallback — never wire
+them into the build, the test run or the runtime, and never put a virtualenv on the backend
+path. The checked-in `.venv` and `requirements.txt` still start the reference if you want a
+side-by-side comparison; that is the only place they belong. `docs/adr/` and
+`GLOSSARY.md` are the live decision and terminology docs.
 
 ## Agent skills
 
-### Issue tracker
-
-GitHub Issues on `salmonenjoyer68/Sol-O` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Canonical five roles, default strings: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+- **Issue tracker**: GitHub Issues on `salmonenjoyer68/Sol-O` via the `gh` CLI. See
+  `docs/agents/issue-tracker.md`.
+- **Triage labels**: five canonical roles, default strings `needs-triage`, `needs-info`,
+  `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+- **Domain docs**: single context — root `GLOSSARY.md` plus `docs/adr/`. See
+  `docs/agents/domain.md`.

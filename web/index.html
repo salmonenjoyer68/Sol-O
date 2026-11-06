@@ -353,8 +353,13 @@
     backdrop-filter: blur(10px);
   }
   #nav .wordmark {
-    font-weight: 700; font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase;
-    color: var(--accent); text-shadow: 0 0 18px rgba(255, 196, 74, 0.35);
+    display: flex; align-items: center;
+    color: var(--accent); filter: drop-shadow(0 0 10px rgba(255, 196, 74, 0.45));
+  }
+  #nav .wordmark svg { display: block; height: 30px; width: auto; }
+  #nav .wordmark svg .logo-ink { fill: currentColor; }
+  #nav .wordmark svg .logo-stroke {
+    stroke: currentColor; stroke-width: 22; stroke-linecap: butt; stroke-linejoin: miter; fill: none;
   }
   #nav .nav-links { display: flex; gap: var(--space-1); }
   #nav a {
@@ -497,7 +502,15 @@
 <canvas id="sky" tabindex="-1"></canvas>
 
 <nav id="nav" aria-label="Page">
-  <span class="wordmark">Sol-O</span>
+  <span class="wordmark" role="img" aria-label="Sol-O"><svg viewBox="0 0 800 350" aria-hidden="true" focusable="false">
+    <path class="logo-stroke" d="M 205 112 C 190 92, 165 85, 140 85 C 105 85, 82 104, 82 130 C 82 158, 110 168, 145 178 C 180 188, 208 200, 208 230 C 208 260, 180 280, 142 280 C 110 280, 86 266, 72 245" />
+    <ellipse class="logo-stroke" cx="315" cy="182.5" rx="72" ry="97.5" />
+    <polyline class="logo-stroke" points="430,85 430,270 520,270" />
+    <line class="logo-stroke" x1="460" y1="182.5" x2="520" y2="182.5" />
+    <ellipse class="logo-stroke" cx="622" cy="182.5" rx="72" ry="97.5" />
+    <circle class="logo-ink" cx="315" cy="182.5" r="14" />
+    <circle class="logo-ink" cx="622" cy="182.5" r="14" />
+  </svg></span>
   <div class="nav-links">
     <a href="#demo">Demo</a>
     <a href="#how">How it works</a>

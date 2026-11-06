@@ -12,16 +12,19 @@ Automates customer inquiries: **researcher → writer → checker → logger →
 
 ## Setup
 ```bash
-cp .env.example .env && source .venv/bin/activate && pip install -r requirements.txt
+cp .env.example .env   # fill in BASE_URL, API_KEY, MODEL
+cargo build            # one Rust binary; no Python, no virtualenv, no Node
 ```
+The backend is Rust (`src/`, binary `sol-o`); the UI is the single file `web/index.html`. `app/`, `tools/` and `tests/` are the frozen Python reference implementation the port was verified against — read-only, never built or run.
+The root for `agents/`, `kb/`, `web/`, `data/` and `.env` is the process's working directory; set `SOL_O_ROOT=/path/to/dir` to run a copied binary against that directory instead. `cargo run` and `cargo test` already start in the repo root.
 Model: `BASE_URL` `API_KEY` `MODEL`. Tools: `TAVILY_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID` `DRY_RUN` `TASK_DESCRIPTION`.
 Safety: `LLM_TIMEOUT_SECONDS` `LLM_MAX_RETRIES` `TOOL_TIMEOUT_SECONDS` `RUN_TIMEOUT_SECONDS` `MAX_AGENTS` `REQUIRE_APPROVAL` `AUTO_APPROVE` `PENDING_TTL_HOURS` `MAX_INPUT_CHARS`.
 
 ## Run
 ```bash
-uv run python -m app.cli "A customer asks: do you deliver on weekends?"
-uv run python -m app.cli --file examples/inquiry.txt && uv run python -m app.cli "task" --plan
-uv run uvicorn app.main:app
+cargo run -- run "A customer asks: do you deliver on weekends?"
+cargo run -- run --file examples/inquiry.txt && cargo run -- run "task" --plan
+cargo run -- serve        # http://127.0.0.1:8000/ (--host and --port override)
 ```
 
 ## Live UI
@@ -40,8 +43,8 @@ Planets may ask the Sun to run a tool before answering: they return `{"tool_requ
 The knowledge base is the committed `kb/` directory; edit it like any other content. `POST /inbound`'s `source` is the conversation key: recall never crosses sources, and an empty or `unknown` source disables it. Web search stays Sun-run before `researcher`.
 
 ## Approvals
-`python -m app.cli --pending | --approve <id> | --reject <id>`; API `GET /pending`, `POST /pending/{id}/approve|reject`. `DRY_RUN=true` prints.
+`cargo run -- pending`, `cargo run -- approve <id>`, `cargo run -- reject <id>`; API `GET /pending`, `POST /pending/{id}/approve|reject`. `DRY_RUN=true` prints.
 
 ## Failures
-`python -m app.cli --show <run_id>`; `GET /runs?status=failed`, `GET /runs/{run_id}` show status, `failed_at`, `failure.error_type` and every call.
-Tests: `uv run pytest && uvx ruff check .`
+`cargo run -- show <run_id>`; `GET /runs?status=failed`, `GET /runs/{run_id}` show status, `failed_at`, `failure.error_type` and every call.
+Tests: `cargo test` (`cargo fmt` formats); the integration suites in `rust-tests/` mostly run the real binary against a scripted provider — `stream.rs` and `tools.rs` are unit-level.
