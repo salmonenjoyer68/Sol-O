@@ -13,9 +13,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::agents::{
-    self, FailureType, ParseError, RunError, PLANNER_AGENT, PLAN_CONTRACT, STEP_CONTRACT,
-};
+use crate::agents::{self, FailureType, ParseError, RunError, PLANNER_AGENT, STEP_CONTRACT};
 use crate::approvals::{approval_required, create_pending};
 use crate::config::{self, Settings};
 use crate::events::EventBus;
@@ -284,12 +282,13 @@ impl Orchestrator {
         let call_timeout =
             Duration::from_secs_f64(self.settings.llm_timeout_seconds.min(remaining).max(0.001));
         let model = resolved_model(&self.settings, PLANNER_AGENT);
+        let contract = agents::plan_contract(self.settings.max_agents);
         let validated = match agents::run_validated(
             &self.settings,
             &self.agents_dir,
             PLANNER_AGENT,
             &user_content,
-            PLAN_CONTRACT,
+            &contract,
             &schema,
             &parse,
             None,
