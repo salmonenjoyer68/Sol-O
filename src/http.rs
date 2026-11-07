@@ -22,7 +22,7 @@ use crate::config::{self, Settings};
 use crate::events::{sse_stream, EventBus};
 use crate::orchestrator::Orchestrator;
 use crate::persistence::{self, Db, PendingActionRow, RunDetail, RunRow, SavedEvent};
-use crate::reliability::redact;
+use crate::reliability::{init_secrets, redact};
 use crate::schemas::{AgentOutput, InboundRequest, OrchestrationRequest, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
@@ -40,6 +40,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(settings: Settings, db: Db) -> Self {
+        init_secrets(&settings);
         let bus = Arc::new(EventBus::new(db.clone()));
         let settings = Arc::new(settings);
         let orchestrator = Arc::new(Orchestrator::new(settings.clone(), db.clone(), bus.clone()));

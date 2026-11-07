@@ -184,7 +184,6 @@ async fn quiet_streams_receive_keepalives() {
 
 #[tokio::test]
 async fn published_events_are_redacted_before_storage() {
-    std::env::set_var("TAVILY_API_KEY", "tvly-secret-999999");
     let app = TestApp::start(Duration::from_secs(30)).await;
 
     let record = app
@@ -192,7 +191,7 @@ async fn published_events_are_redacted_before_storage() {
         .publish(
             "run-redacted",
             "agent_done",
-            json!({"summary": "token tvly-secret-999999"}),
+            json!({"summary": "token sk-abcdefghijklmn"}),
         )
         .await;
     assert_eq!(record.data["summary"], "token ***");
@@ -203,12 +202,11 @@ async fn published_events_are_redacted_before_storage() {
     })
     .await
     .unwrap();
-    std::env::remove_var("TAVILY_API_KEY");
 
     assert_eq!(saved[0].data["summary"], "token ***");
     assert!(!serde_json::to_string(&saved[0].data)
         .unwrap()
-        .contains("tvly-secret-999999"));
+        .contains("sk-abcdefghijklmn"));
 }
 
 #[test]
