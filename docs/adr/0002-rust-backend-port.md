@@ -38,8 +38,9 @@ Rewrite the backend in Rust and keep the Python tree in the repo, frozen.
   codepoint-based truncation limits (`MAX_RESULT_CHARS` and friends), the
   `json.dumps(default=str)` fallback, and `calc`'s Python arithmetic (`//` floors, `%`
   takes the dividend's sign, int/float promotion, `round(v, 6)`).
-  Two accepted deviations: the validation-error text fed back to the model becomes
-  Rust-shaped, and log lines become `tracing` fields instead of `INFO:sol_o.sun:…`.
+  Two deviations were accepted at cutover: the validation-error text fed back to the model
+  becomes Rust-shaped, and log lines become `tracing` fields instead of `INFO:sol_o.sun:…`.
+  The parity addendum below records three more, for five.
 - **Python's status.** Frozen reference implementation. No new features, no contract
   changes; `AGENTS.md` says so at cutover. It rots from the first Rust-only change, so it
   is a reading aid, not a fallback.
@@ -89,3 +90,33 @@ replay, approve and reject flows were verified against the Rust service at 375, 
 1440px. `app/`, `tools/` and `tests/` are frozen reference code: nothing builds, tests or
 runs them any more, and no virtualenv is needed for the backend. The throwaway replay
 harness was never committed, so there was nothing to delete.
+
+## Parity decisions (ticket #40)
+
+- Status: accepted
+- Date: 2026-11-07
+
+Four decisions from the post-cutover review; each one was checked against the merged code.
+
+- **`POST /run` writes no `agent_calls` row.** Parity beats issue #25's "one agent-call row
+  per call": the reference's handler only logs (`app/agents.py`), and `POST /run` creates
+  no `runs` row for an audit row to attach to. The orchestrated path still writes one row
+  per agent call.
+- **An out-of-range `GET /runs?limit=` keeps the 422.** The reference rejects it through
+  `Query(20, ge=1, le=100)`; the port returns the same status, and `parse_limit` in
+  `src/http.rs` answers with the port's `{"error": "invalid_request", "detail": "limit
+  must be between 1 and 100"}` body rather than FastAPI's `{"detail": [...]}` list. The
+  status is parity; the body is one of the deviations below.
+- **`fetch_url` decodes page text as UTF-8 only.** `extract_text` uses
+  `String::from_utf8_lossy` and ignores the declared `Content-Type` charset that the
+  reference honours. It is a labelled `shortcut:` in `src/fetch.rs`; upgrade if non-UTF-8
+  pages matter.
+- **`calc` fails outside its integer range.** Non-finite results fail with the reference's
+  `result is not a finite number`; integer `+ - * ** // %` and unary negation are checked
+  over the 128-bit signed range, and an out-of-range result fails with `integer result out
+  of range` instead of wrapping or panicking. Python's integers are arbitrary-precision,
+  so this is a deliberate deviation, chosen over a bignum dependency.
+
+**Accepted deviations: five, not two** — the two from the cutover (Rust-shaped
+validation-error text, `tracing` log lines) plus UTF-8-only `fetch_url` decoding, the
+checked-integer `calc` range, and the `invalid_request` body on an out-of-range `limit`.
