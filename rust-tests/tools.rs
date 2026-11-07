@@ -428,13 +428,27 @@ fn a_failing_handler_is_audited_as_a_failed_call_and_never_raises() {
     assert_eq!(failed_fetch["ok"], false);
     assert_eq!(failed_fetch["error"], "empty url");
 
+    let failed_calc = writer.run(&ToolRequest {
+        tool: "calc".to_string(),
+        args: json!({"expression": "1e308 * 10"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    });
+    assert_eq!(failed_calc["ok"], false);
+    assert_eq!(failed_calc["error"], "result is not a finite number");
+    assert!(
+        failed_calc.get("result").is_none(),
+        "no value key: {failed_calc}"
+    );
+
     let detail = db.get_run_detail("run-1").unwrap().expect("run exists");
     let rows: Vec<&sol_o::persistence::ToolCallRow> = detail
         .tool_calls
         .iter()
         .filter(|row| row.status == "failed")
         .collect();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].tool, "kb_search");
     assert!(rows[0]
         .error_message
@@ -443,4 +457,9 @@ fn a_failing_handler_is_audited_as_a_failed_call_and_never_raises() {
         .starts_with("invalid limit"));
     assert_eq!(rows[1].tool, "fetch_url");
     assert_eq!(rows[1].error_message.as_deref(), Some("empty url"));
+    assert_eq!(rows[2].tool, "calc");
+    assert_eq!(
+        rows[2].error_message.as_deref(),
+        Some("result is not a finite number")
+    );
 }
