@@ -398,21 +398,40 @@ fn approval_error(error: ApprovalError) -> ApiError {
     )
 }
 
+/// The reference declares `limit: int = Query(20, ge=1, le=100)`, so FastAPI
+/// answers a bad value with a 422 `detail` array; match its field shape.
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
-    match raw {
-        None => Ok(DEFAULT_LIMIT),
-        Some(text) => text
-            .trim()
-            .parse::<i64>()
-            .ok()
-            .filter(|limit| (1..=MAX_LIMIT).contains(limit))
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    json!({"error": "invalid_request", "detail": "limit must be between 1 and 100"}),
-                )
+    const MIN_LIMIT: i64 = 1;
+    let Some(text) = raw else {
+        return Ok(DEFAULT_LIMIT);
+    };
+    let invalid = |kind: &str, msg: String| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "detail": [{"type": kind, "loc": ["query", "limit"], "msg": msg, "input": text}],
             }),
+        )
+    };
+    let limit: i64 = text.trim().parse().map_err(|_| {
+        invalid(
+            "int_parsing",
+            "Input should be a valid integer, unable to parse string as an integer".to_string(),
+        )
+    })?;
+    if limit < MIN_LIMIT {
+        return Err(invalid(
+            "greater_than_equal",
+            format!("Input should be greater than or equal to {MIN_LIMIT}"),
+        ));
     }
+    if limit > MAX_LIMIT {
+        return Err(invalid(
+            "less_than_equal",
+            format!("Input should be less than or equal to {MAX_LIMIT}"),
+        ));
+    }
+    Ok(limit)
 }
 
 fn run_not_found(run_id: &str) -> ApiError {
