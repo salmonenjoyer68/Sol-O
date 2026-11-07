@@ -12,6 +12,8 @@ const MAX_EXPRESSION_CHARS: usize = 500;
 
 const UNSUPPORTED: &str = "unsupported expression";
 const DIVISION_BY_ZERO: &str = "division by zero";
+const NON_FINITE: &str = "result is not a finite number";
+const INTEGER_OUT_OF_RANGE: &str = "integer result out of range";
 
 #[derive(Clone, Debug, PartialEq)]
 enum Eval {
@@ -349,7 +351,7 @@ pub fn calculate(expression: &str) -> Result<Value, String> {
     let mut parser = Parser::new(cleaned)?;
     let node = parser.finish()?;
     let value = evaluate(&node)?;
-    Ok(json!({"expression": cleaned, "value": format_value(&value)}))
+    Ok(json!({"expression": cleaned, "value": format_value(&value)?}))
 }
 
 fn evaluate(node: &Node) -> Result<Eval, String> {
@@ -360,7 +362,7 @@ fn evaluate(node: &Node) -> Result<Eval, String> {
             match (operator, value) {
                 ('+', Eval::Int(value)) => Ok(Eval::Int(value)),
                 ('+', Eval::Float(value)) => Ok(Eval::Float(value)),
-                ('-', Eval::Int(value)) => Ok(Eval::Int(-value)),
+                ('-', Eval::Int(value)) => checked_int(value.checked_neg()),
                 ('-', Eval::Float(value)) => Ok(Eval::Float(-value)),
                 (_, other) => Err(format!(
                     "bad operand type for unary {}: '{}'",
@@ -399,21 +401,27 @@ fn evaluate(node: &Node) -> Result<Eval, String> {
     }
 }
 
+fn checked_int(value: Option<i128>) -> Result<Eval, String> {
+    value
+        .map(Eval::Int)
+        .ok_or_else(|| INTEGER_OUT_OF_RANGE.to_string())
+}
+
 fn binary(operator: BinOp, left: Eval, right: Eval) -> Result<Eval, String> {
     match operator {
         BinOp::Add => match (left, right) {
-            (Eval::Int(a), Eval::Int(b)) => Ok(Eval::Int(a + b)),
+            (Eval::Int(a), Eval::Int(b)) => checked_int(a.checked_add(b)),
             (Eval::Text(a), Eval::Text(b)) => Ok(Eval::Text(format!("{a}{b}"))),
             (a, b) if a.is_number() && b.is_number() => Ok(Eval::Float(a.float() + b.float())),
             (a, b) => Err(unsupported_operands("+", &a, &b)),
         },
         BinOp::Sub => match (left, right) {
-            (Eval::Int(a), Eval::Int(b)) => Ok(Eval::Int(a - b)),
+            (Eval::Int(a), Eval::Int(b)) => checked_int(a.checked_sub(b)),
             (a, b) if a.is_number() && b.is_number() => Ok(Eval::Float(a.float() - b.float())),
             (a, b) => Err(unsupported_operands("-", &a, &b)),
         },
         BinOp::Mul => match (left, right) {
-            (Eval::Int(a), Eval::Int(b)) => Ok(Eval::Int(a * b)),
+            (Eval::Int(a), Eval::Int(b)) => checked_int(a.checked_mul(b)),
             (Eval::Text(a), Eval::Int(b)) | (Eval::Int(b), Eval::Text(a)) => {
                 Ok(Eval::Text(repeat(&a, b)))
             }
@@ -446,7 +454,7 @@ fn binary(operator: BinOp, left: Eval, right: Eval) -> Result<Eval, String> {
             if b == 0 {
                 return Err("integer division or modulo by zero".to_string());
             }
-            Ok(Eval::Int(floor_division(a, b)))
+            Ok(Eval::Int(floor_division(a, b)?))
         }
         BinOp::Mod => {
             if left.is_float() || right.is_float() {
@@ -462,7 +470,7 @@ fn binary(operator: BinOp, left: Eval, right: Eval) -> Result<Eval, String> {
             if b == 0 {
                 return Err("integer modulo by zero".to_string());
             }
-            Ok(Eval::Int(modulo_int(a, b)))
+            Ok(Eval::Int(modulo_int(a, b)?))
         }
         BinOp::Pow => match (&left, &right) {
             (Eval::Int(base), Eval::Int(exponent)) => {
@@ -472,12 +480,7 @@ fn binary(operator: BinOp, left: Eval, right: Eval) -> Result<Eval, String> {
                     }
                     Ok(Eval::Float((*base as f64).powi(*exponent as i32)))
                 } else {
-                    let exponent = *exponent as u32;
-                    let mut result: i128 = 1;
-                    for _ in 0..exponent {
-                        result = result.wrapping_mul(*base);
-                    }
-                    Ok(Eval::Int(result))
+                    checked_int(base.checked_pow(*exponent as u32))
                 }
             }
             (a, b) if a.is_number() && b.is_number() => {
@@ -522,7 +525,7 @@ fn call_numeric(name: &str, arguments: Vec<Eval>) -> Result<Eval, String> {
                 ));
             }
             match &arguments[0] {
-                Eval::Int(value) => Ok(Eval::Int(value.abs())),
+                Eval::Int(value) => checked_int(value.checked_abs()),
                 Eval::Float(value) => Ok(Eval::Float(value.abs())),
                 other => Err(format!(
                     "bad operand type for abs(): '{}'",
@@ -554,10 +557,10 @@ fn call_numeric(name: &str, arguments: Vec<Eval>) -> Result<Eval, String> {
                     if digits >= 0 {
                         return Ok(Eval::Int(*value));
                     }
-                    let factor = 10_i128.pow((-digits).min(38) as u32);
+                    let factor = 10_i128.pow(digits.saturating_neg().min(38) as u32);
                     let scaled = format!("{:.0}", *value as f64 / factor as f64);
                     let whole: i128 = scaled.parse().unwrap_or(0);
-                    Ok(Eval::Int(whole * factor))
+                    checked_int(whole.checked_mul(factor))
                 }
                 Eval::Float(value) if digits.is_none() => {
                     let rounded: i128 = format!("{value:.0}")
@@ -624,22 +627,30 @@ fn compare(left: &Eval, right: &Eval) -> Result<std::cmp::Ordering, String> {
     }
 }
 
-fn floor_division(a: i128, b: i128) -> i128 {
-    let quotient = a / b;
+fn floor_division(a: i128, b: i128) -> Result<i128, String> {
+    let quotient = a
+        .checked_div(b)
+        .ok_or_else(|| INTEGER_OUT_OF_RANGE.to_string())?;
     let remainder = a % b;
     if remainder != 0 && (remainder < 0) != (b < 0) {
-        quotient - 1
-    } else {
         quotient
+            .checked_sub(1)
+            .ok_or_else(|| INTEGER_OUT_OF_RANGE.to_string())
+    } else {
+        Ok(quotient)
     }
 }
 
-fn modulo_int(a: i128, b: i128) -> i128 {
-    let remainder = a % b;
+fn modulo_int(a: i128, b: i128) -> Result<i128, String> {
+    let remainder = a
+        .checked_rem(b)
+        .ok_or_else(|| INTEGER_OUT_OF_RANGE.to_string())?;
     if remainder != 0 && (remainder < 0) != (b < 0) {
-        remainder + b
-    } else {
         remainder
+            .checked_add(b)
+            .ok_or_else(|| INTEGER_OUT_OF_RANGE.to_string())
+    } else {
+        Ok(remainder)
     }
 }
 
@@ -653,7 +664,7 @@ fn modulo(a: f64, b: f64) -> f64 {
 }
 
 fn date_from(value: &Eval) -> Result<NaiveDate, String> {
-    let text = format_value(value);
+    let text = format_value(value)?;
     NaiveDate::parse_from_str(&text, "%Y-%m-%d")
         .map_err(|_| format!("Invalid isoformat string: '{text}'"))
 }
@@ -721,17 +732,16 @@ impl Eval {
 }
 
 /// `_format`: ints exact, floats rounded to six places, everything else as text.
-fn format_value(value: &Eval) -> String {
+fn format_value(value: &Eval) -> Result<String, String> {
     match value {
-        Eval::Int(value) => value.to_string(),
+        Eval::Int(value) => Ok(value.to_string()),
         Eval::Float(value) => {
             if value.is_nan() || value.is_infinite() {
-                return "result is not a finite number".to_string();
+                return Err(NON_FINITE.to_string());
             }
-            let rounded = round_digits(*value, 6);
-            python_float_repr(rounded)
+            Ok(python_float_repr(round_digits(*value, 6)))
         }
-        Eval::Text(text) => text.clone(),
+        Eval::Text(text) => Ok(text.clone()),
     }
 }
 
@@ -797,6 +807,60 @@ mod tests {
         assert_eq!(error("1.0 // 0"), "float floor division by zero");
         assert_eq!(error("1.0 % 0"), "float modulo");
         assert_eq!(error("0 ** -1"), "0.0 cannot be raised to a negative power");
+    }
+
+    #[test]
+    fn non_finite_results_are_handler_errors() {
+        for expression in [
+            "1e308 * 10",
+            "-1e308 * 10",
+            "1e308 * 10 + 1",
+            "1e308 * 10 - 1e308 * 10",
+            "0.0 * (1e308 * 10)",
+        ] {
+            assert_eq!(
+                error(expression),
+                "result is not a finite number",
+                "for {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_results_outside_the_supported_range_are_handler_errors() {
+        let max = "170141183460469231731687303715884105727";
+        let min = "(-170141183460469231731687303715884105727 - 1)";
+        for expression in [
+            format!("{max} + 1"),
+            format!("-{max} - 2"),
+            format!("{max} * 2"),
+            format!("{max} ** 2"),
+            "(10 ** 12) ** 12".to_string(),
+            format!("-{min}"),
+            format!("{min} // -1"),
+            format!("{min} % -1"),
+            format!("abs({min})"),
+            format!("round({max}, -1)"),
+        ] {
+            assert_eq!(
+                error(&expression),
+                "integer result out of range",
+                "for {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_results_that_fit_stay_exact() {
+        let max = "170141183460469231731687303715884105727";
+        assert_eq!(value(&format!("{max} + 0")), max);
+        assert_eq!(
+            value("-170141183460469231731687303715884105727 - 1"),
+            "-170141183460469231731687303715884105728"
+        );
+        assert_eq!(value(&format!("{max} // 1")), max);
+        assert_eq!(value(&format!("{max} % {max}")), "0");
+        assert_eq!(value(&format!("abs(-{max})")), max);
     }
 
     #[test]
