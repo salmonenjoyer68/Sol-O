@@ -69,7 +69,7 @@ anything the Rust backend runs.
   `GET /stream`, `GET /pending`, `POST /pending/{id}/approve`, `POST /pending/{id}/reject`.
   Status codes and the exact `error` codes (`agent_not_found`, `agent_unreadable`,
   `llm_timeout`, `llm_error`, `invalid_agent_output`, `run_not_found`, `not_found`,
-  `conflict`, `execution_failed`, `ui_unreadable`, `invalid_request`, `database_error`) are
+  `conflict`, `execution_failed`, `ui_unreadable`, `database_error`) are
   part of the contract. CORS admits localhost origins only.
 - **Events**: `{run_id, seq, ts, event, data}` with a per-run increasing `seq`, stored in
   `run_events` and streamed over SSE with `Last-Event-ID` backlog replay and a 15 s
@@ -100,11 +100,10 @@ anything the Rust backend runs.
   nothing. Approve executes the stored message exactly once and restores the stored
   `run_status`; reject sets `rejected`; actions expire after `PENDING_TTL_HOURS` and cannot
   be decided twice.
-- **Five allowed deviations from the reference**, listed in ADR 0002's parity addendum:
+- **Four allowed deviations from the reference**, listed in ADR 0002's parity addendum:
   the validation-error text fed back to the model is Rust-shaped; log lines are `tracing`
   records instead of `INFO:sol_o.sun:…`; `fetch_url` decodes page text as UTF-8 only;
-  integer `calc` results outside the 128-bit signed range fail; and an out-of-range
-  `GET /runs?limit=` returns the port's `invalid_request` body with the reference's 422.
+  integer `calc` results outside the 128-bit signed range fail.
   Everything else — payload shapes, event names and fields, truncation limits, `calc`
   arithmetic, ISO formats — is parity-locked.
 - `web/index.html` stays a single self-contained file (vanilla JS + Canvas): no npm, bundler

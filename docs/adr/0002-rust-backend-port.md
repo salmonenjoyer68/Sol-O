@@ -40,7 +40,7 @@ Rewrite the backend in Rust and keep the Python tree in the repo, frozen.
   takes the dividend's sign, int/float promotion, `round(v, 6)`).
   Two deviations were accepted at cutover: the validation-error text fed back to the model
   becomes Rust-shaped, and log lines become `tracing` fields instead of `INFO:sol_o.sun:…`.
-  The parity addendum below records three more, for five.
+  The parity addendum below records two more, for four.
 - **Python's status.** Frozen reference implementation. No new features, no contract
   changes; `AGENTS.md` says so at cutover. It rots from the first Rust-only change, so it
   is a reading aid, not a fallback.
@@ -103,10 +103,10 @@ Four decisions from the post-cutover review; each one was checked against the me
   no `runs` row for an audit row to attach to. The orchestrated path still writes one row
   per agent call.
 - **An out-of-range `GET /runs?limit=` keeps the 422.** The reference rejects it through
-  `Query(20, ge=1, le=100)`; the port returns the same status, and `parse_limit` in
-  `src/http.rs` answers with the port's `{"error": "invalid_request", "detail": "limit
-  must be between 1 and 100"}` body rather than FastAPI's `{"detail": [...]}` list. The
-  status is parity; the body is one of the deviations below.
+  `Query(20, ge=1, le=100)`; the port returns the same 422, and `parse_limit` in
+  `src/http.rs` answers with FastAPI's `{"detail": [...]}` array (`loc: ["query","limit"]`,
+  types `int_parsing`/`greater_than_equal`/`less_than_equal`), so status and body are both
+  parity and this is not a deviation.
 - **`fetch_url` decodes page text as UTF-8 only.** `extract_text` uses
   `String::from_utf8_lossy` and ignores the declared `Content-Type` charset that the
   reference honours. It is a labelled `shortcut:` in `src/fetch.rs`; upgrade if non-UTF-8
@@ -117,6 +117,6 @@ Four decisions from the post-cutover review; each one was checked against the me
   of range` instead of wrapping or panicking. Python's integers are arbitrary-precision,
   so this is a deliberate deviation, chosen over a bignum dependency.
 
-**Accepted deviations: five, not two** — the two from the cutover (Rust-shaped
-validation-error text, `tracing` log lines) plus UTF-8-only `fetch_url` decoding, the
-checked-integer `calc` range, and the `invalid_request` body on an out-of-range `limit`.
+**Accepted deviations: four, not two** — the two from the cutover (Rust-shaped
+validation-error text, `tracing` log lines) plus UTF-8-only `fetch_url` decoding and the
+checked-integer `calc` range.

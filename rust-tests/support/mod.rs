@@ -163,9 +163,10 @@ impl Server {
 
     /// Poll until the run is terminal. The logger writes the run row before the
     /// notifier step finishes, so a non-running status alone is not a barrier:
-    /// the saved events must also show the run ended (or the approval gate,
-    /// which has no terminal event until a decision is made). The detail is
-    /// re-read afterwards, since it was fetched before the terminal event.
+    /// the saved events must also show the run ended (or the notifier step,
+    /// which is the last to run before the approval gate; that gate has no
+    /// terminal event until a decision is made). The detail is re-read
+    /// afterwards, since it was fetched before the terminal event.
     pub fn wait_for_run(&self, run_id: &str) -> Value {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
@@ -173,11 +174,16 @@ impl Server {
             assert_eq!(response.status(), 200, "run detail");
             let detail: Value = response.json().unwrap();
             let status = detail["run"]["status"].as_str().unwrap_or_default();
-            if status == "awaiting_approval" {
+            let saved = self.events(run_id);
+            if status == "awaiting_approval"
+                && saved.iter().any(|event| {
+                    event["event"] == "agent_done" && event["data"]["agent"] == "notifier"
+                })
+            {
                 return detail;
             }
             let ended = status != "running"
-                && self.events(run_id).iter().any(|event| {
+                && saved.iter().any(|event| {
                     matches!(
                         event["event"].as_str().unwrap_or_default(),
                         "all_done" | "run_failed" | "approval_decided"
