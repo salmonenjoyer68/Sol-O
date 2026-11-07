@@ -80,10 +80,11 @@ anything the Rust backend runs.
   older `sol-o.db` in place, so an existing file must keep working. Timestamps are ISO-8601
   UTC with second precision; run ids are 32 lowercase hex characters.
 - **Prompts**: the runtime output contracts are plain strings in `src/agents.rs`
-  (`OUTPUT_CONTRACT`, `STEP_CONTRACT`, `PLAN_CONTRACT`) appended to the prompt file, and
-  `agents/*.md` documents the same shape as a JSON example. `src/schemas.rs` is
+  (`OUTPUT_CONTRACT`, `STEP_CONTRACT`, `plan_contract(max_agents)`) appended to the prompt
+  file, and `agents/*.md` documents the same shape as a JSON example. `src/schemas.rs` is
   authoritative; changing an output field means updating the schema, the contract strings
-  and the prompt file together, or the model is told two different things.
+  and the prompt file together, or the model is told two different things. The plan
+  contract's step cap and the planner schema's `maxItems` both come from `MAX_AGENTS`.
 - **Tool envelope**: `{"tool_requests": [{"tool": "<name>", "args": {...}}]}` with no
   `status` key. `agent_tool_names` in `src/toolbox.rs` is the only source of allowed names
   (researcher: `kb_search`, `fetch_url`, `recall`; writer: `kb_search`, `calc`, `recall`;
