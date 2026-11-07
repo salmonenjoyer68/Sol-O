@@ -9,18 +9,14 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Settings;
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
-pub const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 const MAX_QUERY_CHARS: usize = 400;
 
-/// One Tavily search. `SOL_O_TAVILY_ENDPOINT` points process tests at a loopback
-/// stand-in so they never reach the network.
+/// One Tavily search. The endpoint comes from settings so process tests can
+/// point it at a loopback stand-in and never reach the network.
 pub fn search(settings: &Settings, query: &str) -> Result<Vec<Value>, String> {
-    let api_key = std::env::var("TAVILY_API_KEY")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let api_key = settings.tavily_api_key.as_str();
     if api_key.is_empty() {
         return Err(redact("TAVILY_API_KEY is not set"));
     }
@@ -28,19 +24,15 @@ pub fn search(settings: &Settings, query: &str) -> Result<Vec<Value>, String> {
     if cleaned.is_empty() {
         return Err(redact("empty search query"));
     }
-    let endpoint = std::env::var("SOL_O_TAVILY_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| TAVILY_ENDPOINT.to_string());
+    let endpoint = settings.tavily_endpoint.as_str();
 
     let body = json!({
-        "query": cleaned.chars().take(MAX_QUERY_CHARS).collect::<String>(),
+        "query": truncate(&cleaned, MAX_QUERY_CHARS),
         "max_results": 5,
         "search_depth": "basic",
         "include_answer": false,
     });
-    let payload = post_with_retry(settings, &endpoint, &api_key, &body)?;
+    let payload = post_with_retry(settings, endpoint, &api_key, &body)?;
     let raw_results = payload.get("results").and_then(Value::as_array);
     let Some(raw_results) = raw_results else {
         return Err(redact("unexpected Tavily response shape"));

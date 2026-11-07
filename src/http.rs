@@ -22,10 +22,11 @@ use crate::config::{self, Settings};
 use crate::events::{sse_stream, EventBus};
 use crate::orchestrator::Orchestrator;
 use crate::persistence::{self, Db, PendingActionRow, RunDetail, RunRow, SavedEvent};
-use crate::reliability::redact;
+use crate::reliability::{init_secrets, redact};
 use crate::schemas::{AgentOutput, InboundRequest, OrchestrationRequest, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
+const MIN_LIMIT: i64 = 1;
 const MAX_LIMIT: i64 = 100;
 
 #[derive(Clone)]
@@ -40,6 +41,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(settings: Settings, db: Db) -> Self {
+        init_secrets(&settings);
         let bus = Arc::new(EventBus::new(db.clone()));
         let settings = Arc::new(settings);
         let orchestrator = Arc::new(Orchestrator::new(settings.clone(), db.clone(), bus.clone()));
@@ -397,21 +399,53 @@ fn approval_error(error: ApprovalError) -> ApiError {
     )
 }
 
+/// The reference declares `limit: int = Query(20, ge=1, le=100)`, so FastAPI
+/// answers a bad value with a 422 `detail` array; match its field shape,
+/// including `ctx` for the range errors and the coerced integer as `input`.
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
-    match raw {
-        None => Ok(DEFAULT_LIMIT),
-        Some(text) => text
-            .trim()
-            .parse::<i64>()
-            .ok()
-            .filter(|limit| (1..=MAX_LIMIT).contains(limit))
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    json!({"error": "invalid_request", "detail": "limit must be between 1 and 100"}),
-                )
-            }),
+    let Some(text) = raw else {
+        return Ok(DEFAULT_LIMIT);
+    };
+    let invalid = |kind: &str, msg: String, input: String, ctx: Option<Value>| {
+        let mut detail = json!({
+            "type": kind,
+            "loc": ["query", "limit"],
+            "msg": msg,
+            "input": input,
+        });
+        if let Some(ctx) = ctx {
+            detail["ctx"] = ctx;
+        }
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"detail": [detail]}),
+        )
+    };
+    let limit: i64 = text.trim().parse().map_err(|_| {
+        invalid(
+            "int_parsing",
+            "Input should be a valid integer, unable to parse string as an integer".to_string(),
+            text.to_string(),
+            None,
+        )
+    })?;
+    if limit < MIN_LIMIT {
+        return Err(invalid(
+            "greater_than_equal",
+            format!("Input should be greater than or equal to {MIN_LIMIT}"),
+            limit.to_string(),
+            Some(json!({"ge": MIN_LIMIT})),
+        ));
     }
+    if limit > MAX_LIMIT {
+        return Err(invalid(
+            "less_than_equal",
+            format!("Input should be less than or equal to {MAX_LIMIT}"),
+            limit.to_string(),
+            Some(json!({"le": MAX_LIMIT})),
+        ));
+    }
+    Ok(limit)
 }
 
 fn run_not_found(run_id: &str) -> ApiError {

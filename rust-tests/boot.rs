@@ -192,6 +192,45 @@ fn serves_the_ui_from_disk_and_browses_an_empty_history() {
 }
 
 #[test]
+fn a_bad_limit_keeps_the_422_and_returns_the_reference_validation_body() {
+    let dir = TempDir::new().unwrap();
+    let server = Server::start(&dir.path().join("sol-o.db"));
+
+    for (query, kind, input, ctx) in [
+        ("limit=lots", "int_parsing", json!("lots"), None),
+        (
+            "limit=0",
+            "greater_than_equal",
+            json!("0"),
+            Some(json!({"ge": 1})),
+        ),
+        (
+            "limit=101",
+            "less_than_equal",
+            json!("101"),
+            Some(json!({"le": 100})),
+        ),
+    ] {
+        let response = server.get(&format!("/runs?{query}"));
+        assert_eq!(response.status(), 422, "{query}");
+        let body: Value = response.json().unwrap();
+        assert!(
+            body.get("error").is_none(),
+            "{query} kept the Rust body: {body}"
+        );
+        let detail = &body["detail"][0];
+        assert_eq!(detail["type"], kind, "{query}");
+        assert_eq!(detail["loc"], json!(["query", "limit"]), "{query}");
+        assert_eq!(detail["input"], input, "{query}");
+        assert_eq!(detail.get("ctx"), ctx.as_ref(), "{query}: {detail}");
+        assert!(
+            !detail["msg"].as_str().unwrap_or_default().is_empty(),
+            "{query}: {detail}"
+        );
+    }
+}
+
+#[test]
 fn opens_a_database_written_by_the_python_service() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("legacy.db");

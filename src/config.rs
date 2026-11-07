@@ -24,8 +24,17 @@ pub fn agents_dir() -> PathBuf {
         .unwrap_or_else(|| root().join("agents"))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Settings {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub dry_run: bool,
+    pub tavily_api_key: String,
+    pub telegram_bot_token: String,
+    pub telegram_chat_id: String,
+    pub tavily_endpoint: String,
+    pub telegram_endpoint: Option<String>,
     pub llm_timeout_seconds: f64,
     pub llm_max_retries: i64,
     pub tool_timeout_seconds: f64,
@@ -42,9 +51,49 @@ pub struct Settings {
     pub max_args_chars: i64,
 }
 
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Settings")
+            .field("base_url", &self.base_url)
+            .field("api_key", &format_args!("***"))
+            .field("model", &self.model)
+            .field("dry_run", &self.dry_run)
+            .field("tavily_api_key", &format_args!("***"))
+            .field("telegram_bot_token", &format_args!("***"))
+            .field("telegram_chat_id", &self.telegram_chat_id)
+            .field("tavily_endpoint", &self.tavily_endpoint)
+            .field("telegram_endpoint", &self.telegram_endpoint)
+            .field("llm_timeout_seconds", &self.llm_timeout_seconds)
+            .field("llm_max_retries", &self.llm_max_retries)
+            .field("tool_timeout_seconds", &self.tool_timeout_seconds)
+            .field("run_timeout_seconds", &self.run_timeout_seconds)
+            .field("max_agents", &self.max_agents)
+            .field("require_approval", &self.require_approval)
+            .field("auto_approve", &self.auto_approve)
+            .field("pending_ttl_hours", &self.pending_ttl_hours)
+            .field("max_input_chars", &self.max_input_chars)
+            .field("agent_models", &self.agent_models)
+            .field("max_tool_turns", &self.max_tool_turns)
+            .field("max_result_chars", &self.max_result_chars)
+            .field("max_result_items", &self.max_result_items)
+            .field("max_args_chars", &self.max_args_chars)
+            .finish()
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            dry_run: true,
+            tavily_api_key: String::new(),
+            telegram_bot_token: String::new(),
+            telegram_chat_id: String::new(),
+            tavily_endpoint: "https://api.tavily.com/search".to_string(),
+            telegram_endpoint: None,
             llm_timeout_seconds: 30.0,
             llm_max_retries: 2,
             tool_timeout_seconds: 15.0,
@@ -63,7 +112,8 @@ impl Default for Settings {
     }
 }
 
-/// Read the environment once; invalid values fall back to defaults with a warning.
+/// Read the environment once; invalid values fall back to defaults and one
+/// aggregated warning lists every bad setting.
 pub fn load_settings() -> Settings {
     from_lookup(|name| std::env::var(name).ok(), &known_agents())
 }
@@ -90,45 +140,144 @@ where
     F: Fn(&str) -> Option<String>,
 {
     let defaults = Settings::default();
-    Settings {
+    let mut invalid: Vec<String> = Vec::new();
+    let settings = Settings {
+        base_url: parse_text(&lookup, "BASE_URL", &defaults.base_url),
+        api_key: parse_text(&lookup, "API_KEY", &defaults.api_key),
+        model: parse_text(&lookup, "MODEL", &defaults.model),
+        dry_run: parse_dry_run(&lookup, defaults.dry_run, &mut invalid),
+        tavily_api_key: parse_text(&lookup, "TAVILY_API_KEY", &defaults.tavily_api_key),
+        telegram_bot_token: parse_text(&lookup, "TELEGRAM_BOT_TOKEN", &defaults.telegram_bot_token),
+        telegram_chat_id: parse_text(&lookup, "TELEGRAM_CHAT_ID", &defaults.telegram_chat_id),
+        tavily_endpoint: parse_text(&lookup, "SOL_O_TAVILY_ENDPOINT", &defaults.tavily_endpoint),
+        telegram_endpoint: parse_optional_text(&lookup, "SOL_O_TELEGRAM_ENDPOINT"),
         llm_timeout_seconds: parse_float(
             &lookup,
             "LLM_TIMEOUT_SECONDS",
             defaults.llm_timeout_seconds,
             0.001,
+            &mut invalid,
         ),
-        llm_max_retries: parse_int(&lookup, "LLM_MAX_RETRIES", defaults.llm_max_retries, 0),
+        llm_max_retries: parse_int(
+            &lookup,
+            "LLM_MAX_RETRIES",
+            defaults.llm_max_retries,
+            0,
+            &mut invalid,
+        ),
         tool_timeout_seconds: parse_float(
             &lookup,
             "TOOL_TIMEOUT_SECONDS",
             defaults.tool_timeout_seconds,
             0.001,
+            &mut invalid,
         ),
         run_timeout_seconds: parse_float(
             &lookup,
             "RUN_TIMEOUT_SECONDS",
             defaults.run_timeout_seconds,
             0.001,
+            &mut invalid,
         ),
-        max_agents: parse_int(&lookup, "MAX_AGENTS", defaults.max_agents, 1),
-        require_approval: parse_bool(&lookup, "REQUIRE_APPROVAL", defaults.require_approval),
-        auto_approve: parse_bool(&lookup, "AUTO_APPROVE", defaults.auto_approve),
+        max_agents: parse_int(&lookup, "MAX_AGENTS", defaults.max_agents, 1, &mut invalid),
+        require_approval: parse_bool(
+            &lookup,
+            "REQUIRE_APPROVAL",
+            defaults.require_approval,
+            &mut invalid,
+        ),
+        auto_approve: parse_bool(&lookup, "AUTO_APPROVE", defaults.auto_approve, &mut invalid),
         pending_ttl_hours: parse_float(
             &lookup,
             "PENDING_TTL_HOURS",
             defaults.pending_ttl_hours,
             0.0,
+            &mut invalid,
         ),
-        max_input_chars: parse_int(&lookup, "MAX_INPUT_CHARS", defaults.max_input_chars, 1),
-        agent_models: parse_agent_models(&lookup("AGENT_MODELS").unwrap_or_default(), known),
-        max_tool_turns: parse_int(&lookup, "MAX_TOOL_TURNS", defaults.max_tool_turns, 1),
-        max_result_chars: parse_int(&lookup, "MAX_RESULT_CHARS", defaults.max_result_chars, 1),
-        max_result_items: parse_int(&lookup, "MAX_RESULT_ITEMS", defaults.max_result_items, 1),
-        max_args_chars: parse_int(&lookup, "MAX_ARGS_CHARS", defaults.max_args_chars, 1),
+        max_input_chars: parse_int(
+            &lookup,
+            "MAX_INPUT_CHARS",
+            defaults.max_input_chars,
+            1,
+            &mut invalid,
+        ),
+        agent_models: parse_agent_models_collecting(
+            &lookup("AGENT_MODELS").unwrap_or_default(),
+            known,
+            &mut invalid,
+        ),
+        max_tool_turns: parse_int(
+            &lookup,
+            "MAX_TOOL_TURNS",
+            defaults.max_tool_turns,
+            1,
+            &mut invalid,
+        ),
+        max_result_chars: parse_int(
+            &lookup,
+            "MAX_RESULT_CHARS",
+            defaults.max_result_chars,
+            1,
+            &mut invalid,
+        ),
+        max_result_items: parse_int(
+            &lookup,
+            "MAX_RESULT_ITEMS",
+            defaults.max_result_items,
+            1,
+            &mut invalid,
+        ),
+        max_args_chars: parse_int(
+            &lookup,
+            "MAX_ARGS_CHARS",
+            defaults.max_args_chars,
+            1,
+            &mut invalid,
+        ),
+    };
+    warn_invalid(&invalid);
+    settings
+}
+
+/// One warning for every bad value, so a single line lists everything to fix.
+fn warn_invalid(invalid: &[String]) {
+    if !invalid.is_empty() {
+        warn!(
+            settings = %invalid.join(", "),
+            "invalid settings; using fallback values"
+        );
     }
 }
 
-fn parse_float<F>(lookup: &F, name: &str, default: f64, minimum: f64) -> f64
+fn parse_text<F>(lookup: &F, name: &str, default: &str) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let raw = lookup(name).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        default.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn parse_optional_text<F>(lookup: &F, name: &str) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let raw = lookup(name).unwrap_or_default();
+    let raw = raw.trim();
+    (!raw.is_empty()).then(|| raw.to_string())
+}
+
+fn parse_float<F>(
+    lookup: &F,
+    name: &str,
+    default: f64,
+    minimum: f64,
+    invalid: &mut Vec<String>,
+) -> f64
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -139,24 +288,20 @@ where
     }
     match raw.parse::<f64>() {
         Ok(value) if value >= minimum => value,
-        Ok(_) => {
-            warn!(
-                setting = name,
-                raw, minimum, "setting below minimum; using default"
-            );
-            default
-        }
-        Err(_) => {
-            warn!(
-                setting = name,
-                raw, default, "invalid setting; using default"
-            );
+        _ => {
+            invalid.push(format!("{name}={raw}"));
             default
         }
     }
 }
 
-fn parse_int<F>(lookup: &F, name: &str, default: i64, minimum: i64) -> i64
+fn parse_int<F>(
+    lookup: &F,
+    name: &str,
+    default: i64,
+    minimum: i64,
+    invalid: &mut Vec<String>,
+) -> i64
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -167,24 +312,14 @@ where
     }
     match raw.parse::<i64>() {
         Ok(value) if value >= minimum => value,
-        Ok(_) => {
-            warn!(
-                setting = name,
-                raw, minimum, "setting below minimum; using default"
-            );
-            default
-        }
-        Err(_) => {
-            warn!(
-                setting = name,
-                raw, default, "invalid setting; using default"
-            );
+        _ => {
+            invalid.push(format!("{name}={raw}"));
             default
         }
     }
 }
 
-fn parse_bool<F>(lookup: &F, name: &str, default: bool) -> bool
+fn parse_bool<F>(lookup: &F, name: &str, default: bool, invalid: &mut Vec<String>) -> bool
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -195,11 +330,29 @@ where
         "1" | "true" | "yes" | "on" => true,
         "0" | "false" | "no" | "off" => false,
         _ => {
-            warn!(
-                setting = name,
-                raw, default, "invalid setting; using default"
-            );
+            invalid.push(format!("{name}={raw}"));
             default
+        }
+    }
+}
+
+/// `DRY_RUN` follows `tools/telegram.py::dry_run_enabled`: an absent variable
+/// keeps the default; a present unrecognised value means delivery, not the
+/// default.
+fn parse_dry_run<F>(lookup: &F, default: bool, invalid: &mut Vec<String>) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = lookup("DRY_RUN") else {
+        return default;
+    };
+    let raw = raw.trim().to_lowercase();
+    match raw.as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => {
+            invalid.push(format!("DRY_RUN={raw}"));
+            false
         }
     }
 }
@@ -209,6 +362,17 @@ where
 /// A malformed pair or a key without an `agents/<name>.md` prompt is skipped so
 /// one typo cannot break a run; that agent keeps the `MODEL` fallback.
 pub fn parse_agent_models(raw: &str, known: &HashSet<String>) -> BTreeMap<String, String> {
+    let mut invalid = Vec::new();
+    let models = parse_agent_models_collecting(raw, known, &mut invalid);
+    warn_invalid(&invalid);
+    models
+}
+
+fn parse_agent_models_collecting(
+    raw: &str,
+    known: &HashSet<String>,
+    invalid: &mut Vec<String>,
+) -> BTreeMap<String, String> {
     let mut models = BTreeMap::new();
     let raw = raw.trim();
     if raw.is_empty() {
@@ -217,16 +381,16 @@ pub fn parse_agent_models(raw: &str, known: &HashSet<String>) -> BTreeMap<String
     for pair in raw.split(',') {
         let pair = pair.trim();
         let Some((agent, model)) = pair.split_once('=') else {
-            warn!(entry = pair, "invalid AGENT_MODELS entry; skipping");
+            invalid.push(format!("AGENT_MODELS={pair}"));
             continue;
         };
         let (agent, model) = (agent.trim(), model.trim());
         if agent.is_empty() || model.is_empty() {
-            warn!(entry = pair, "invalid AGENT_MODELS entry; skipping");
+            invalid.push(format!("AGENT_MODELS={pair}"));
             continue;
         }
         if !known.contains(agent) {
-            warn!(agent, "unknown AGENT_MODELS agent; skipping");
+            invalid.push(format!("AGENT_MODELS agent={agent}"));
             continue;
         }
         models.insert(agent.to_string(), model.to_string());
@@ -272,6 +436,114 @@ mod tests {
         assert_eq!(loaded.max_result_chars, 6000);
         assert_eq!(loaded.max_result_items, 10);
         assert_eq!(loaded.max_args_chars, 500);
+    }
+
+    #[test]
+    fn provider_notification_and_endpoint_settings_have_documented_defaults() {
+        let loaded = settings_from(&[], &no_agents());
+
+        assert_eq!(loaded.base_url, "");
+        assert_eq!(loaded.api_key, "");
+        assert_eq!(loaded.model, "");
+        assert!(loaded.dry_run);
+        assert_eq!(loaded.tavily_api_key, "");
+        assert_eq!(loaded.telegram_bot_token, "");
+        assert_eq!(loaded.telegram_chat_id, "");
+        assert_eq!(loaded.tavily_endpoint, "https://api.tavily.com/search");
+        assert_eq!(loaded.telegram_endpoint, None);
+    }
+
+    #[test]
+    fn provider_notification_and_endpoint_settings_are_trimmed_from_the_environment() {
+        let loaded = settings_from(
+            &[
+                ("BASE_URL", " http://127.0.0.1:9000 "),
+                ("API_KEY", " key-123 "),
+                ("MODEL", " model-x "),
+                ("DRY_RUN", " false "),
+                ("TAVILY_API_KEY", " tvly-key "),
+                ("TELEGRAM_BOT_TOKEN", " token-1 "),
+                ("TELEGRAM_CHAT_ID", " 42 "),
+                ("SOL_O_TAVILY_ENDPOINT", " http://127.0.0.1:1/search "),
+                (
+                    "SOL_O_TELEGRAM_ENDPOINT",
+                    " http://127.0.0.1:2/sendMessage ",
+                ),
+            ],
+            &no_agents(),
+        );
+
+        assert_eq!(loaded.base_url, "http://127.0.0.1:9000");
+        assert_eq!(loaded.api_key, "key-123");
+        assert_eq!(loaded.model, "model-x");
+        assert!(!loaded.dry_run);
+        assert_eq!(loaded.tavily_api_key, "tvly-key");
+        assert_eq!(loaded.telegram_bot_token, "token-1");
+        assert_eq!(loaded.telegram_chat_id, "42");
+        assert_eq!(loaded.tavily_endpoint, "http://127.0.0.1:1/search");
+        assert_eq!(
+            loaded.telegram_endpoint.as_deref(),
+            Some("http://127.0.0.1:2/sendMessage")
+        );
+    }
+
+    #[test]
+    fn blank_endpoint_overrides_keep_the_documented_defaults() {
+        let loaded = settings_from(
+            &[
+                ("SOL_O_TAVILY_ENDPOINT", "   "),
+                ("SOL_O_TELEGRAM_ENDPOINT", ""),
+            ],
+            &no_agents(),
+        );
+
+        assert_eq!(loaded.tavily_endpoint, "https://api.tavily.com/search");
+        assert_eq!(loaded.telegram_endpoint, None);
+    }
+
+    #[test]
+    fn debug_never_prints_secret_settings() {
+        let loaded = settings_from(
+            &[
+                ("API_KEY", "api-secret-123"),
+                ("TAVILY_API_KEY", "tvly-secret-123"),
+                ("TELEGRAM_BOT_TOKEN", "bot-secret-123"),
+            ],
+            &no_agents(),
+        );
+
+        let rendered = format!("{loaded:?}");
+        assert!(rendered.contains("***"), "{rendered}");
+        assert!(!rendered.contains("api-secret-123"), "{rendered}");
+        assert!(!rendered.contains("tvly-secret-123"), "{rendered}");
+        assert!(!rendered.contains("bot-secret-123"), "{rendered}");
+    }
+
+    #[test]
+    fn dry_run_follows_the_reference_getenv_semantics() {
+        assert!(
+            settings_from(&[], &no_agents()).dry_run,
+            "unset means dry run"
+        );
+        for spelling in ["1", "true", "yes", "on", "TRUE", " On "] {
+            assert!(
+                settings_from(&[("DRY_RUN", spelling)], &no_agents()).dry_run,
+                "{spelling:?} should be true"
+            );
+        }
+        for spelling in ["0", "false", "no", "off", "FALSE", " No "] {
+            assert!(
+                !settings_from(&[("DRY_RUN", spelling)], &no_agents()).dry_run,
+                "{spelling:?} should be false"
+            );
+        }
+        // Present but unrecognised (including empty) means send, like `getenv`.
+        for spelling in ["maybe", "", "   "] {
+            assert!(
+                !settings_from(&[("DRY_RUN", spelling)], &no_agents()).dry_run,
+                "{spelling:?} should be false"
+            );
+        }
     }
 
     #[test]

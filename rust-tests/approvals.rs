@@ -382,6 +382,44 @@ fn dry_run_is_the_default_and_never_reaches_the_endpoint() {
 }
 
 #[test]
+fn editing_the_environment_file_after_start_changes_nothing_until_restart() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let env_file = dir.path().join("settings.env");
+    std::fs::write(&env_file, "DRY_RUN=true\n").unwrap();
+    let provider = happy_provider();
+    let telegram = FakeTelegram::start(200);
+    let server = start_server(
+        &database,
+        &provider,
+        &[
+            ("SOL_O_ENV_FILE", env_file.to_str().unwrap()),
+            ("SOL_O_TELEGRAM_ENDPOINT", &telegram.endpoint),
+        ],
+    );
+
+    // A restart would read these and send for real; this process must not.
+    std::fs::write(
+        &env_file,
+        "DRY_RUN=false\nTELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_CHAT_ID=42\n",
+    )
+    .unwrap();
+
+    let run_id = server.start_run();
+    server.wait_for_run(&run_id);
+    let action_id = server.pending()[0]["id"].as_i64().unwrap();
+
+    let approved = server.empty_post(&format!("/pending/{action_id}/approve"));
+    assert_eq!(approved.status(), 200);
+    let body: Value = approved.json().unwrap();
+    assert_eq!(
+        body["delivery"],
+        json!({"dry_run": true, "delivered": false, "parts": 1})
+    );
+    assert_eq!(telegram.count(), 0);
+}
+
+#[test]
 fn auto_approved_runs_send_without_a_pending_row() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");

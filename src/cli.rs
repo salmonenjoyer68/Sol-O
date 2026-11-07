@@ -16,7 +16,7 @@ use crate::events::EventBus;
 use crate::http::{router, AppState};
 use crate::orchestrator::Orchestrator;
 use crate::persistence::{self, Db};
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
 /// Status -> process exit code, from `EXIT_CODES` in the reference CLI.
 fn exit_code(status: &str) -> u8 {
@@ -78,8 +78,11 @@ pub async fn run() -> ExitCode {
     if let Some(path) = env_file() {
         dotenvy::from_path(path).ok();
     }
+    // One process-wide snapshot: every subcommand redacts from these values.
+    let settings = config::load_settings();
+    crate::reliability::init_secrets(&settings);
     match cli.command {
-        Commands::Serve { host, port } => match serve(&host, port).await {
+        Commands::Serve { host, port } => match serve(&host, port, settings).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sol-o: {error}");
@@ -91,16 +94,19 @@ pub async fn run() -> ExitCode {
             plan,
             file,
             source,
-        } => run_task(&task, plan, file.as_deref(), source).await,
+        } => run_task(&task, plan, file.as_deref(), source, settings).await,
         Commands::Show { run_id } => show_run(&run_id),
-        Commands::Pending => show_pending(),
-        Commands::Approve { id } => decide(id, true).await,
-        Commands::Reject { id } => decide(id, false).await,
+        Commands::Pending => show_pending(settings),
+        Commands::Approve { id } => decide(id, true, settings).await,
+        Commands::Reject { id } => decide(id, false, settings).await,
     }
 }
 
-async fn serve(host: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = config::load_settings();
+async fn serve(
+    host: &str,
+    port: u16,
+    settings: config::Settings,
+) -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::from_env();
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
@@ -117,12 +123,13 @@ async fn run_task(
     plan: bool,
     file: Option<&Path>,
     source: Option<String>,
+    settings: config::Settings,
 ) -> ExitCode {
     let task = match task_from_args(words, file) {
         Ok(task) => task,
         Err(message) => return usage_error(&message),
     };
-    let settings = Arc::new(config::load_settings());
+    let settings = Arc::new(settings);
     let db = Db::from_env();
     let bus = Arc::new(EventBus::new(db.clone()));
     let run_id = persistence::new_run_id();
@@ -201,7 +208,7 @@ fn show_run(run_id: &str) -> ExitCode {
         run.created_at,
         python_float(run.duration_seconds)
     );
-    println!("task: {}", take(&run.task, 300));
+    println!("task: {}", truncate(&run.task, 300));
     if let Some(warning) = run.warning.as_deref().filter(|text| !text.is_empty()) {
         println!("warning: {warning}");
     }
@@ -248,8 +255,7 @@ fn show_run(run_id: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn show_pending() -> ExitCode {
-    let settings = config::load_settings();
+fn show_pending(settings: config::Settings) -> ExitCode {
     let db = Db::from_env();
     let rows = match db.list_pending(settings.pending_ttl_hours) {
         Ok(rows) => rows,
@@ -278,7 +284,7 @@ fn show_pending() -> ExitCode {
         );
         println!(
             "  task: {}",
-            take(&redact(&payload_text(payload, "task")), 200)
+            truncate(&redact(&payload_text(payload, "task")), 200)
         );
         println!(
             "  verdict: {}",
@@ -292,8 +298,7 @@ fn show_pending() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-async fn decide(action_id: i64, approve: bool) -> ExitCode {
-    let settings = config::load_settings();
+async fn decide(action_id: i64, approve: bool, settings: config::Settings) -> ExitCode {
     let db = Db::from_env();
     let bus = Arc::new(EventBus::new(db.clone()));
     let outcome = if approve {
@@ -336,10 +341,6 @@ fn payload_text(payload: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
-}
-
-fn take(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
 }
 
 /// Python's `str(float)`: whole numbers keep a `.0` suffix.

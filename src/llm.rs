@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Settings;
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
 const BACKOFF_BASE_SECONDS: u64 = 1;
 const MAX_DETAIL_CHARS: usize = 500;
@@ -63,14 +63,10 @@ pub fn model_for(settings: &Settings, agent: &str) -> Option<String> {
     settings.agent_models.get(agent).cloned()
 }
 
-fn env_value(name: &str) -> String {
-    std::env::var(name).unwrap_or_default().trim().to_string()
-}
-
-fn provider_settings() -> Result<(String, String), LlmError> {
-    let base_url = env_value("BASE_URL");
-    let api_key = env_value("API_KEY");
-    let missing: Vec<&str> = [("BASE_URL", &base_url), ("API_KEY", &api_key)]
+fn provider_settings(settings: &Settings) -> Result<(&str, &str), LlmError> {
+    let base_url = settings.base_url.as_str();
+    let api_key = settings.api_key.as_str();
+    let missing: Vec<&str> = [("BASE_URL", base_url), ("API_KEY", api_key)]
         .iter()
         .filter(|(_, value)| value.is_empty())
         .map(|(name, _)| *name)
@@ -103,7 +99,7 @@ fn rejects_response_format(status: u16, body: &str) -> bool {
 
 fn describe(status: u16, body: &str) -> String {
     let body = redact(body);
-    let body: String = body.chars().take(MAX_DETAIL_CHARS).collect();
+    let body = truncate(&body, MAX_DETAIL_CHARS);
     format!("HTTP {status}: {body}")
 }
 
@@ -188,10 +184,10 @@ pub fn call_llm(
     timeout: Duration,
     model_override: Option<&str>,
 ) -> Result<String, LlmError> {
-    let (base_url, api_key) = provider_settings()?;
+    let (base_url, api_key) = provider_settings(settings)?;
     let model = model_override
         .map(str::to_string)
-        .or_else(|| Some(env_value("MODEL")))
+        .or_else(|| Some(settings.model.clone()))
         .filter(|model| !model.is_empty())
         .ok_or_else(|| LlmError::fatal("missing environment variable(s): MODEL"))?;
     let timeout = timeout.max(Duration::from_millis(1));

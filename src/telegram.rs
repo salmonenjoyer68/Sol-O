@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::json;
 
+use crate::config::Settings;
 use crate::reliability::redact;
 
 pub const TELEGRAM_LIMIT: usize = 4000;
@@ -43,15 +44,6 @@ impl std::fmt::Display for TelegramError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
-}
-
-/// Default to true: never send unless explicitly disabled.
-pub fn dry_run_enabled() -> bool {
-    let raw = std::env::var("DRY_RUN").unwrap_or_else(|_| "true".to_string());
-    matches!(
-        raw.trim().to_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 /// Split on paragraph boundaries, then hard-wrap, never exceeding `limit`.
@@ -93,9 +85,9 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
 }
 
 /// Send `text` (or print it under DRY_RUN); return delivery metadata.
-pub fn send_message(text: &str, timeout_seconds: f64) -> Result<Delivery, TelegramError> {
+pub fn send_message(settings: &Settings, text: &str) -> Result<Delivery, TelegramError> {
     let parts = split_message(text, TELEGRAM_LIMIT);
-    if dry_run_enabled() {
+    if settings.dry_run {
         println!("\n--- DRY_RUN telegram message ---");
         for (index, part) in parts.iter().enumerate() {
             println!("[part {}/{}] {}", index + 1, parts.len(), part);
@@ -113,26 +105,19 @@ pub fn send_message(text: &str, timeout_seconds: f64) -> Result<Delivery, Telegr
         });
     }
 
-    let token = std::env::var("TELEGRAM_BOT_TOKEN")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let chat_id = std::env::var("TELEGRAM_CHAT_ID")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let token = settings.telegram_bot_token.as_str();
+    let chat_id = settings.telegram_chat_id.as_str();
     if token.is_empty() || chat_id.is_empty() {
         return Err(TelegramError::new(
             "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set",
         ));
     }
-    let endpoint = std::env::var("SOL_O_TELEGRAM_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let endpoint = settings
+        .telegram_endpoint
+        .clone()
         .unwrap_or_else(|| format!("https://api.telegram.org/bot{token}/sendMessage"));
 
-    let timeout = Duration::from_secs_f64(timeout_seconds.max(0.001));
+    let timeout = Duration::from_secs_f64(settings.tool_timeout_seconds.max(0.001));
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()

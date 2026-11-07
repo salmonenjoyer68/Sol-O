@@ -18,9 +18,13 @@ anything the Rust backend runs.
   its own files.
 - `cp .env.example .env` and fill `BASE_URL`, `API_KEY`, `MODEL`. Tools want
   `TAVILY_API_KEY` and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`; `DRY_RUN` defaults to true.
+  `SOL_O_TAVILY_ENDPOINT` and `SOL_O_TELEGRAM_ENDPOINT` override the tool endpoints for the
+  process tests; they default to `https://api.tavily.com/search` and the token's
+  `https://api.telegram.org/bot<token>/sendMessage`.
 - The binary loads `.env` once at startup (`dotenvy`, from the repo root). `SOL_O_ENV_FILE`
-  selects another file; an empty value loads nothing. Restart after editing `.env`; prompt
-  edits (`agents/*.md`) need no restart — they are read per request.
+  selects another file; an empty value loads nothing. Every setting is parsed once at
+  startup into `Settings`, so restart after editing `.env`; prompt edits (`agents/*.md`)
+  need no restart — they are read per request.
 - `SOL_O_DB` overrides the SQLite file (default `data/sol-o.db`, created on first run).
 
 ## Commands
@@ -65,7 +69,7 @@ anything the Rust backend runs.
   `GET /stream`, `GET /pending`, `POST /pending/{id}/approve`, `POST /pending/{id}/reject`.
   Status codes and the exact `error` codes (`agent_not_found`, `agent_unreadable`,
   `llm_timeout`, `llm_error`, `invalid_agent_output`, `run_not_found`, `not_found`,
-  `conflict`, `execution_failed`, `ui_unreadable`, `invalid_request`, `database_error`) are
+  `conflict`, `execution_failed`, `ui_unreadable`, `database_error`) are
   part of the contract. CORS admits localhost origins only.
 - **Events**: `{run_id, seq, ts, event, data}` with a per-run increasing `seq`, stored in
   `run_events` and streamed over SSE with `Last-Event-ID` backlog replay and a 15 s
@@ -80,10 +84,11 @@ anything the Rust backend runs.
   older `sol-o.db` in place, so an existing file must keep working. Timestamps are ISO-8601
   UTC with second precision; run ids are 32 lowercase hex characters.
 - **Prompts**: the runtime output contracts are plain strings in `src/agents.rs`
-  (`OUTPUT_CONTRACT`, `STEP_CONTRACT`, `PLAN_CONTRACT`) appended to the prompt file, and
-  `agents/*.md` documents the same shape as a JSON example. `src/schemas.rs` is
+  (`OUTPUT_CONTRACT`, `STEP_CONTRACT`, `plan_contract(max_agents)`) appended to the prompt
+  file, and `agents/*.md` documents the same shape as a JSON example. `src/schemas.rs` is
   authoritative; changing an output field means updating the schema, the contract strings
-  and the prompt file together, or the model is told two different things.
+  and the prompt file together, or the model is told two different things. The plan
+  contract's step cap and the planner schema's `maxItems` both come from `MAX_AGENTS`.
 - **Tool envelope**: `{"tool_requests": [{"tool": "<name>", "args": {...}}]}` with no
   `status` key. `agent_tool_names` in `src/toolbox.rs` is the only source of allowed names
   (researcher: `kb_search`, `fetch_url`, `recall`; writer: `kb_search`, `calc`, `recall`;
@@ -95,8 +100,10 @@ anything the Rust backend runs.
   nothing. Approve executes the stored message exactly once and restores the stored
   `run_status`; reject sets `rejected`; actions expire after `PENDING_TTL_HOURS` and cannot
   be decided twice.
-- **Two allowed deviations from the reference**: the validation-error text fed back to the
-  model is Rust-shaped, and log lines are `tracing` records instead of `INFO:sol_o.sun:…`.
+- **Four allowed deviations from the reference**, listed in ADR 0002's parity addendum:
+  the validation-error text fed back to the model is Rust-shaped; log lines are `tracing`
+  records instead of `INFO:sol_o.sun:…`; `fetch_url` decodes page text as UTF-8 only;
+  integer `calc` results outside the 128-bit signed range fail.
   Everything else — payload shapes, event names and fields, truncation limits, `calc`
   arithmetic, ISO formats — is parity-locked.
 - `web/index.html` stays a single self-contained file (vanilla JS + Canvas): no npm, bundler
@@ -107,9 +114,13 @@ anything the Rust backend runs.
 - Keep the reference's semantics when editing `src/`: codepoint-based truncation, Python's
   `//`, `%`, int/float promotion and `round(v, 6)` in `calc`, `json.dumps(default=str)` for
   fallback serialization.
-- Settings live in `src/config.rs` and are read once at process start. Tests are hermetic:
-  point `SOL_O_ENV_FILE` at an empty file and `SOL_O_DB` at a temp path so a developer `.env`
-  never reaches a test.
+- Settings live in `src/config.rs` and are read once at process start; the redaction
+  secrets are that same snapshot (`init_secrets`), so `redact` never reads the
+  environment. Outside `src/config.rs`, the environment is read only for
+  `TASK_DESCRIPTION` (CLI input) and the path overrides (`SOL_O_DB`, `SOL_O_ENV_FILE`,
+  `SOL_O_ROOT`, `SOL_O_AGENTS_DIR`, `HOME`). Tests are hermetic: point `SOL_O_ENV_FILE`
+  at an empty file and `SOL_O_DB` at a temp path so a developer `.env` never reaches a
+  test.
 - `.env` is gitignored; never commit secrets. `.env.example` is the tracked template. `data/`
   contents are gitignored.
 

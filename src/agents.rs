@@ -28,8 +28,13 @@ pub const STEP_CONTRACT: &str = "\n\n## Runtime output contract (highest priorit
 /// The planner is a planet like any other, but never plans itself.
 pub const PLANNER_AGENT: &str = "sun";
 
-/// Appended to the planner call; the plan shape must match `SunPlan`.
-pub const PLAN_CONTRACT: &str = "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nShape: {\"steps\": [{\"agent\": \"<agent id>\", \"task\": \"<instruction>\"}]}\n- 1 to 7 steps, executed in order.\n- Every agent must come from the available agents list in the user message.\n- Do not add extra keys.\n";
+/// Appended to the planner call; the plan shape must match `SunPlan` and the
+/// step cap comes from the same setting that bounds the provider schema.
+pub fn plan_contract(max_agents: i64) -> String {
+    format!(
+        "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nShape: {{\"steps\": [{{\"agent\": \"<agent id>\", \"task\": \"<instruction>\"}}]}}\n- 1 to {max_agents} steps, executed in order.\n- Every agent must come from the available agents list in the user message.\n- Do not add extra keys.\n"
+    )
+}
 
 static AGENT_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+$").expect("static agent name pattern is valid"));
@@ -387,6 +392,17 @@ mod tests {
             RETRY_INSTRUCTION,
             "Your previous response could not be used: {error}\n\nReturn the corrected, complete JSON object only. No prose and no markdown fences."
         );
+    }
+
+    /// The default configuration's planner contract must read exactly as it did
+    /// when the cap was a literal seven.
+    #[test]
+    fn the_plan_contract_names_the_configured_step_cap() {
+        assert_eq!(
+            plan_contract(7),
+            "\n\n## Runtime output contract (highest priority)\n\nReturn exactly ONE valid JSON object and nothing else. No prose, no markdown, no code fences.\nShape: {\"steps\": [{\"agent\": \"<agent id>\", \"task\": \"<instruction>\"}]}\n- 1 to 7 steps, executed in order.\n- Every agent must come from the available agents list in the user message.\n- Do not add extra keys.\n"
+        );
+        assert!(plan_contract(3).contains("- 1 to 3 steps, executed in order."));
     }
 
     #[test]
