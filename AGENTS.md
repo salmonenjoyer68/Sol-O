@@ -18,9 +18,13 @@ anything the Rust backend runs.
   its own files.
 - `cp .env.example .env` and fill `BASE_URL`, `API_KEY`, `MODEL`. Tools want
   `TAVILY_API_KEY` and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`; `DRY_RUN` defaults to true.
+  `SOL_O_TAVILY_ENDPOINT` and `SOL_O_TELEGRAM_ENDPOINT` override the tool endpoints for the
+  process tests; they default to `https://api.tavily.com/search` and the token's
+  `https://api.telegram.org/bot<token>/sendMessage`.
 - The binary loads `.env` once at startup (`dotenvy`, from the repo root). `SOL_O_ENV_FILE`
-  selects another file; an empty value loads nothing. Restart after editing `.env`; prompt
-  edits (`agents/*.md`) need no restart — they are read per request.
+  selects another file; an empty value loads nothing. Every setting is parsed once at
+  startup into `Settings`, so restart after editing `.env`; prompt edits (`agents/*.md`)
+  need no restart — they are read per request.
 - `SOL_O_DB` overrides the SQLite file (default `data/sol-o.db`, created on first run).
 
 ## Commands

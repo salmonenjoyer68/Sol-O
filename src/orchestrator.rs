@@ -1031,8 +1031,7 @@ impl Orchestrator {
                     );
                     json!({"agent": "notifier", "status": "failed", "error": message})
                 } else {
-                    match send_telegram(&self.db, run_id, &text, self.settings.tool_timeout_seconds)
-                    {
+                    match send_telegram(&self.db, run_id, &text, &self.settings) {
                         Ok(delivery) => {
                             emitter.emit(
                                 "notifier_sent",
@@ -1292,11 +1291,11 @@ fn send_telegram(
     db: &Db,
     run_id: &str,
     text: &str,
-    timeout_seconds: f64,
+    settings: &Settings,
 ) -> Result<telegram::Delivery, TelegramError> {
     let started_at = persistence::now_iso();
     let started = Instant::now();
-    match telegram::send_message(text, timeout_seconds) {
+    match telegram::send_message(settings, text) {
         Ok(delivery) => {
             record_telegram_call(db, run_id, &started_at, started, "ok", None);
             Ok(delivery)
@@ -1338,12 +1337,7 @@ fn record_telegram_call(
 }
 
 fn resolved_model(settings: &Settings, agent: &str) -> String {
-    llm::model_for(settings, agent).unwrap_or_else(|| {
-        std::env::var("MODEL")
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    })
+    llm::model_for(settings, agent).unwrap_or_else(|| settings.model.clone())
 }
 
 /// One `agent_calls` row from the fields every call site already has.

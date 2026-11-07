@@ -26,6 +26,15 @@ pub fn agents_dir() -> PathBuf {
 
 #[derive(Debug, Clone)]
 pub struct Settings {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub dry_run: bool,
+    pub tavily_api_key: String,
+    pub telegram_bot_token: String,
+    pub telegram_chat_id: String,
+    pub tavily_endpoint: String,
+    pub telegram_endpoint: Option<String>,
     pub llm_timeout_seconds: f64,
     pub llm_max_retries: i64,
     pub tool_timeout_seconds: f64,
@@ -45,6 +54,15 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            dry_run: true,
+            tavily_api_key: String::new(),
+            telegram_bot_token: String::new(),
+            telegram_chat_id: String::new(),
+            tavily_endpoint: "https://api.tavily.com/search".to_string(),
+            telegram_endpoint: None,
             llm_timeout_seconds: 30.0,
             llm_max_retries: 2,
             tool_timeout_seconds: 15.0,
@@ -91,6 +109,15 @@ where
 {
     let defaults = Settings::default();
     Settings {
+        base_url: parse_text(&lookup, "BASE_URL", &defaults.base_url),
+        api_key: parse_text(&lookup, "API_KEY", &defaults.api_key),
+        model: parse_text(&lookup, "MODEL", &defaults.model),
+        dry_run: parse_bool(&lookup, "DRY_RUN", defaults.dry_run),
+        tavily_api_key: parse_text(&lookup, "TAVILY_API_KEY", &defaults.tavily_api_key),
+        telegram_bot_token: parse_text(&lookup, "TELEGRAM_BOT_TOKEN", &defaults.telegram_bot_token),
+        telegram_chat_id: parse_text(&lookup, "TELEGRAM_CHAT_ID", &defaults.telegram_chat_id),
+        tavily_endpoint: parse_text(&lookup, "SOL_O_TAVILY_ENDPOINT", &defaults.tavily_endpoint),
+        telegram_endpoint: parse_optional_text(&lookup, "SOL_O_TELEGRAM_ENDPOINT"),
         llm_timeout_seconds: parse_float(
             &lookup,
             "LLM_TIMEOUT_SECONDS",
@@ -126,6 +153,28 @@ where
         max_result_items: parse_int(&lookup, "MAX_RESULT_ITEMS", defaults.max_result_items, 1),
         max_args_chars: parse_int(&lookup, "MAX_ARGS_CHARS", defaults.max_args_chars, 1),
     }
+}
+
+fn parse_text<F>(lookup: &F, name: &str, default: &str) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let raw = lookup(name).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        default.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn parse_optional_text<F>(lookup: &F, name: &str) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let raw = lookup(name).unwrap_or_default();
+    let raw = raw.trim();
+    (!raw.is_empty()).then(|| raw.to_string())
 }
 
 fn parse_float<F>(lookup: &F, name: &str, default: f64, minimum: f64) -> f64
@@ -272,6 +321,75 @@ mod tests {
         assert_eq!(loaded.max_result_chars, 6000);
         assert_eq!(loaded.max_result_items, 10);
         assert_eq!(loaded.max_args_chars, 500);
+    }
+
+    #[test]
+    fn provider_notification_and_endpoint_settings_have_documented_defaults() {
+        let loaded = settings_from(&[], &no_agents());
+
+        assert_eq!(loaded.base_url, "");
+        assert_eq!(loaded.api_key, "");
+        assert_eq!(loaded.model, "");
+        assert!(loaded.dry_run);
+        assert_eq!(loaded.tavily_api_key, "");
+        assert_eq!(loaded.telegram_bot_token, "");
+        assert_eq!(loaded.telegram_chat_id, "");
+        assert_eq!(loaded.tavily_endpoint, "https://api.tavily.com/search");
+        assert_eq!(loaded.telegram_endpoint, None);
+    }
+
+    #[test]
+    fn provider_notification_and_endpoint_settings_are_trimmed_from_the_environment() {
+        let loaded = settings_from(
+            &[
+                ("BASE_URL", " http://127.0.0.1:9000 "),
+                ("API_KEY", " key-123 "),
+                ("MODEL", " model-x "),
+                ("DRY_RUN", " false "),
+                ("TAVILY_API_KEY", " tvly-key "),
+                ("TELEGRAM_BOT_TOKEN", " token-1 "),
+                ("TELEGRAM_CHAT_ID", " 42 "),
+                ("SOL_O_TAVILY_ENDPOINT", " http://127.0.0.1:1/search "),
+                (
+                    "SOL_O_TELEGRAM_ENDPOINT",
+                    " http://127.0.0.1:2/sendMessage ",
+                ),
+            ],
+            &no_agents(),
+        );
+
+        assert_eq!(loaded.base_url, "http://127.0.0.1:9000");
+        assert_eq!(loaded.api_key, "key-123");
+        assert_eq!(loaded.model, "model-x");
+        assert!(!loaded.dry_run);
+        assert_eq!(loaded.tavily_api_key, "tvly-key");
+        assert_eq!(loaded.telegram_bot_token, "token-1");
+        assert_eq!(loaded.telegram_chat_id, "42");
+        assert_eq!(loaded.tavily_endpoint, "http://127.0.0.1:1/search");
+        assert_eq!(
+            loaded.telegram_endpoint.as_deref(),
+            Some("http://127.0.0.1:2/sendMessage")
+        );
+    }
+
+    #[test]
+    fn blank_endpoint_overrides_keep_the_documented_defaults() {
+        let loaded = settings_from(
+            &[
+                ("SOL_O_TAVILY_ENDPOINT", "   "),
+                ("SOL_O_TELEGRAM_ENDPOINT", ""),
+            ],
+            &no_agents(),
+        );
+
+        assert_eq!(loaded.tavily_endpoint, "https://api.tavily.com/search");
+        assert_eq!(loaded.telegram_endpoint, None);
+    }
+
+    #[test]
+    fn invalid_dry_run_falls_back_to_true() {
+        assert!(settings_from(&[("DRY_RUN", "maybe")], &no_agents()).dry_run);
+        assert!(settings_from(&[("DRY_RUN", "")], &no_agents()).dry_run);
     }
 
     #[test]
