@@ -100,8 +100,11 @@ anything the Rust backend runs.
   nothing. Approve executes the stored message exactly once and restores the stored
   `run_status`; reject sets `rejected`; actions expire after `PENDING_TTL_HOURS` and cannot
   be decided twice.
-- **Two allowed deviations from the reference**: the validation-error text fed back to the
-  model is Rust-shaped, and log lines are `tracing` records instead of `INFO:sol_o.sun:…`.
+- **Five allowed deviations from the reference**, listed in ADR 0002's parity addendum:
+  the validation-error text fed back to the model is Rust-shaped; log lines are `tracing`
+  records instead of `INFO:sol_o.sun:…`; `fetch_url` decodes page text as UTF-8 only;
+  integer `calc` results outside the 128-bit signed range fail; and an out-of-range
+  `GET /runs?limit=` returns the port's `invalid_request` body with the reference's 422.
   Everything else — payload shapes, event names and fields, truncation limits, `calc`
   arithmetic, ISO formats — is parity-locked.
 - `web/index.html` stays a single self-contained file (vanilla JS + Canvas): no npm, bundler
