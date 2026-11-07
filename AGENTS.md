@@ -114,9 +114,13 @@ anything the Rust backend runs.
 - Keep the reference's semantics when editing `src/`: codepoint-based truncation, Python's
   `//`, `%`, int/float promotion and `round(v, 6)` in `calc`, `json.dumps(default=str)` for
   fallback serialization.
-- Settings live in `src/config.rs` and are read once at process start. Tests are hermetic:
-  point `SOL_O_ENV_FILE` at an empty file and `SOL_O_DB` at a temp path so a developer `.env`
-  never reaches a test.
+- Settings live in `src/config.rs` and are read once at process start; the redaction
+  secrets are that same snapshot (`init_secrets`), so `redact` never reads the
+  environment. Outside `src/config.rs`, the environment is read only for
+  `TASK_DESCRIPTION` (CLI input) and the path overrides (`SOL_O_DB`, `SOL_O_ENV_FILE`,
+  `SOL_O_ROOT`, `SOL_O_AGENTS_DIR`, `HOME`). Tests are hermetic: point `SOL_O_ENV_FILE`
+  at an empty file and `SOL_O_DB` at a temp path so a developer `.env` never reaches a
+  test.
 - `.env` is gitignored; never commit secrets. `.env.example` is the tracked template. `data/`
   contents are gitignored.
 

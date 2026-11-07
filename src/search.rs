@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Settings;
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
 const MAX_QUERY_CHARS: usize = 400;
 
@@ -24,15 +24,15 @@ pub fn search(settings: &Settings, query: &str) -> Result<Vec<Value>, String> {
     if cleaned.is_empty() {
         return Err(redact("empty search query"));
     }
-    let endpoint = settings.tavily_endpoint.clone();
+    let endpoint = settings.tavily_endpoint.as_str();
 
     let body = json!({
-        "query": cleaned.chars().take(MAX_QUERY_CHARS).collect::<String>(),
+        "query": truncate(&cleaned, MAX_QUERY_CHARS),
         "max_results": 5,
         "search_depth": "basic",
         "include_answer": false,
     });
-    let payload = post_with_retry(settings, &endpoint, &api_key, &body)?;
+    let payload = post_with_retry(settings, endpoint, &api_key, &body)?;
     let raw_results = payload.get("results").and_then(Value::as_array);
     let Some(raw_results) = raw_results else {
         return Err(redact("unexpected Tavily response shape"));

@@ -33,6 +33,8 @@ pub const NOTIFIER_TASK: &str =
 
 const SUMMARY_LIMIT: usize = 140;
 const SEARCH_QUERY_CHARS: usize = 400;
+/// One value for both the run state and the event payload, so they cannot drift.
+const RUN_TIMEOUT_REASON: &str = "run_timeout";
 const REVISION_CHECK_TASK: &str = "Re-review the revised writer draft against the researcher findings and confirm whether every previously reported issue is fixed.";
 const NO_RESULTS_NOTE: &str = "No search results are available. Do not invent sources: mark every claim 'unverified' and list what could not be checked in gaps.";
 const EMPTY_RESULTS_NOTE: &str =
@@ -404,7 +406,7 @@ impl Orchestrator {
             warning = Some(format!(
                 "task truncated from {task_chars} to {max_input_chars} characters"
             ));
-            task = task.chars().take(max_input_chars).collect();
+            task = truncate(&task, max_input_chars);
             tracing::warn!(%task_chars, max_input_chars, "task truncated");
         }
 
@@ -441,12 +443,12 @@ impl Orchestrator {
                             failure = Some(Failure::new(
                                 PLANNER_AGENT,
                                 FailureType::Timeout,
-                                &format!("run_timeout: {message}"),
+                                &format!("{RUN_TIMEOUT_REASON}: {message}"),
                                 "",
                                 0,
                                 0,
                             ));
-                            "run_timeout".to_string()
+                            RUN_TIMEOUT_REASON.to_string()
                         }
                         PlannerStop::Run(error) => {
                             status = "failed";
@@ -559,11 +561,11 @@ impl Orchestrator {
                 status = "failed";
                 failed_at = Some(step.agent.clone());
                 stopped_at = Some(step.agent.clone());
-                reason = Some("run_timeout".to_string());
+                reason = Some(RUN_TIMEOUT_REASON.to_string());
                 failure = Some(Failure::new(
                     &step.agent,
                     FailureType::Timeout,
-                    &format!("run_timeout: {message}"),
+                    &format!("{RUN_TIMEOUT_REASON}: {message}"),
                     "",
                     0,
                     0,
@@ -574,7 +576,7 @@ impl Orchestrator {
                         step: number,
                         agent: &step.agent,
                         status,
-                        reason: "run_timeout",
+                        reason: RUN_TIMEOUT_REASON,
                         failed: Some(FailedStep {
                             error: FailureType::Timeout.as_str(),
                             message: &message,
@@ -597,11 +599,11 @@ impl Orchestrator {
                     status = "failed";
                     failed_at = Some(step.agent.clone());
                     stopped_at = Some(step.agent.clone());
-                    reason = Some("run_timeout".to_string());
+                    reason = Some(RUN_TIMEOUT_REASON.to_string());
                     failure = Some(Failure::new(
                         &step.agent,
                         FailureType::Timeout,
-                        &format!("run_timeout: {message}"),
+                        &format!("{RUN_TIMEOUT_REASON}: {message}"),
                         "",
                         0,
                         0,
@@ -612,7 +614,7 @@ impl Orchestrator {
                             step: number,
                             agent: &step.agent,
                             status,
-                            reason: "run_timeout",
+                            reason: RUN_TIMEOUT_REASON,
                             failed: None,
                         },
                     );
@@ -695,7 +697,7 @@ impl Orchestrator {
                         error.failure_type
                     };
                     let reason_text = if timed_out {
-                        "run_timeout".to_string()
+                        RUN_TIMEOUT_REASON.to_string()
                     } else {
                         format!("{}: {}", error.failure_type.as_str(), error.detail)
                     };
@@ -912,7 +914,7 @@ impl Orchestrator {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let preview: String = preview.chars().take(SUMMARY_LIMIT).collect();
+                    let preview = truncate(&preview, SUMMARY_LIMIT);
                     emitter.emit(
                         "approval_required",
                         json!({
@@ -1060,11 +1062,11 @@ impl Orchestrator {
                     status = "failed";
                     failed_at = Some("notifier".to_string());
                     stopped_at = Some("notifier".to_string());
-                    reason = Some("run_timeout".to_string());
+                    reason = Some(RUN_TIMEOUT_REASON.to_string());
                     failure = Some(Failure::new(
                         "notifier",
                         FailureType::Timeout,
-                        &format!("run_timeout: {message}"),
+                        &format!("{RUN_TIMEOUT_REASON}: {message}"),
                         "",
                         0,
                         0,

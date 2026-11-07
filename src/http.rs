@@ -26,6 +26,7 @@ use crate::reliability::{init_secrets, redact};
 use crate::schemas::{AgentOutput, InboundRequest, OrchestrationRequest, RunRequest};
 
 const DEFAULT_LIMIT: i64 = 20;
+const MIN_LIMIT: i64 = 1;
 const MAX_LIMIT: i64 = 100;
 
 #[derive(Clone)]
@@ -399,36 +400,49 @@ fn approval_error(error: ApprovalError) -> ApiError {
 }
 
 /// The reference declares `limit: int = Query(20, ge=1, le=100)`, so FastAPI
-/// answers a bad value with a 422 `detail` array; match its field shape.
+/// answers a bad value with a 422 `detail` array; match its field shape,
+/// including `ctx` for the range errors and the coerced integer as `input`.
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
-    const MIN_LIMIT: i64 = 1;
     let Some(text) = raw else {
         return Ok(DEFAULT_LIMIT);
     };
-    let invalid = |kind: &str, msg: String| {
+    let invalid = |kind: &str, msg: String, input: String, ctx: Option<Value>| {
+        let mut detail = json!({
+            "type": kind,
+            "loc": ["query", "limit"],
+            "msg": msg,
+            "input": input,
+        });
+        if let Some(ctx) = ctx {
+            detail["ctx"] = ctx;
+        }
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            json!({
-                "detail": [{"type": kind, "loc": ["query", "limit"], "msg": msg, "input": text}],
-            }),
+            json!({"detail": [detail]}),
         )
     };
     let limit: i64 = text.trim().parse().map_err(|_| {
         invalid(
             "int_parsing",
             "Input should be a valid integer, unable to parse string as an integer".to_string(),
+            text.to_string(),
+            None,
         )
     })?;
     if limit < MIN_LIMIT {
         return Err(invalid(
             "greater_than_equal",
             format!("Input should be greater than or equal to {MIN_LIMIT}"),
+            limit.to_string(),
+            Some(json!({"ge": MIN_LIMIT})),
         ));
     }
     if limit > MAX_LIMIT {
         return Err(invalid(
             "less_than_equal",
             format!("Input should be less than or equal to {MAX_LIMIT}"),
+            limit.to_string(),
+            Some(json!({"le": MAX_LIMIT})),
         ));
     }
     Ok(limit)

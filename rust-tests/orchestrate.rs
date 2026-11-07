@@ -1045,6 +1045,87 @@ fn an_over_long_task_is_truncated_and_the_warning_is_stored() {
         .starts_with("Original task:\nabcdefghij\n\nYour step instruction:\nabcdefghij\n"));
 }
 
+/// Long enough to be a snapshot secret, shaped like no built-in token pattern.
+const SETTINGS_SECRET: &str = "customapikeycafe0123456789";
+
+#[test]
+fn a_settings_secret_is_redacted_in_events_stream_and_run_detail() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let echoed = json!({
+        "agent": "researcher",
+        "status": "complete",
+        "task": TASK,
+        "summary": format!("echo {SETTINGS_SECRET} back"),
+        "findings": [],
+        "conflicts": [],
+        "gaps": [],
+        "clarification_needed": null
+    })
+    .to_string();
+    let provider = FakeProvider::start(vec![
+        Reply::content(echoed),
+        Reply::content(writer_output()),
+        Reply::content(checker_output()),
+    ]);
+    let server = Server::start(
+        &database,
+        &[
+            ("BASE_URL", provider.base_url()),
+            ("API_KEY", SETTINGS_SECRET),
+            ("MODEL", "test-model"),
+            ("AUTO_APPROVE", "true"),
+        ],
+    );
+
+    let live = Server::client()
+        .get(format!("{}/stream", server.base))
+        .send()
+        .expect("GET /stream");
+    let accepted: Value = server
+        .post("/orchestrate", &json!({"task": TASK}))
+        .json()
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().expect("run id").to_string();
+
+    let live_events = read_sse_events(live);
+    let detail = server.wait_for_run(&run_id);
+    let stored = server.events(&run_id);
+
+    assert_eq!(provider.requests().len(), 3, "every scripted reply ran");
+    assert_eq!(
+        detail["run"]["status"], "complete",
+        "the run finished before the assertions"
+    );
+
+    for (label, events) in [("live", &live_events), ("stored", &stored)] {
+        let researcher_done = events
+            .iter()
+            .find(|event| event["event"] == "agent_done" && event["data"]["agent"] == "researcher")
+            .unwrap_or_else(|| panic!("{label} stream has the researcher step: {events:?}"));
+        assert_eq!(
+            researcher_done["data"]["summary"], "echo *** back",
+            "{label}"
+        );
+        let payload = serde_json::to_string(events).unwrap();
+        assert!(
+            !payload.contains(SETTINGS_SECRET),
+            "{label} leaked it: {payload}"
+        );
+        assert!(payload.contains("***"), "{label}: {payload}");
+    }
+
+    let detail_payload = serde_json::to_string(&detail).unwrap();
+    assert!(
+        !detail_payload.contains(SETTINGS_SECRET),
+        "run detail leaked it: {detail_payload}"
+    );
+    assert!(
+        detail_payload.contains("***"),
+        "run detail: {detail_payload}"
+    );
+}
+
 #[test]
 fn orchestrate_validates_its_body() {
     let dir = TempDir::new().unwrap();

@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Settings;
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
 const BACKOFF_BASE_SECONDS: u64 = 1;
 const MAX_DETAIL_CHARS: usize = 500;
@@ -99,7 +99,7 @@ fn rejects_response_format(status: u16, body: &str) -> bool {
 
 fn describe(status: u16, body: &str) -> String {
     let body = redact(body);
-    let body: String = body.chars().take(MAX_DETAIL_CHARS).collect();
+    let body = truncate(&body, MAX_DETAIL_CHARS);
     format!("HTTP {status}: {body}")
 }
 
