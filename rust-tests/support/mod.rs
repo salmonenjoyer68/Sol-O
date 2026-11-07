@@ -164,7 +164,8 @@ impl Server {
     /// Poll until the run is terminal. The logger writes the run row before the
     /// notifier step finishes, so a non-running status alone is not a barrier:
     /// the saved events must also show the run ended (or the approval gate,
-    /// which has no terminal event until a decision is made).
+    /// which has no terminal event until a decision is made). The detail is
+    /// re-read afterwards, since it was fetched before the terminal event.
     pub fn wait_for_run(&self, run_id: &str) -> Value {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
@@ -172,18 +173,20 @@ impl Server {
             assert_eq!(response.status(), 200, "run detail");
             let detail: Value = response.json().unwrap();
             let status = detail["run"]["status"].as_str().unwrap_or_default();
-            let settled = match status {
-                "running" => false,
-                "awaiting_approval" => true,
-                _ => self.events(run_id).iter().any(|event| {
+            if status == "awaiting_approval" {
+                return detail;
+            }
+            let ended = status != "running"
+                && self.events(run_id).iter().any(|event| {
                     matches!(
                         event["event"].as_str().unwrap_or_default(),
                         "all_done" | "run_failed" | "approval_decided"
                     )
-                }),
-            };
-            if settled {
-                return detail;
+                });
+            if ended {
+                let response = self.get(&format!("/runs/{run_id}"));
+                assert_eq!(response.status(), 200, "run detail");
+                return response.json().unwrap();
             }
             assert!(Instant::now() < deadline, "run did not settle: {detail}");
             std::thread::sleep(Duration::from_millis(25));
