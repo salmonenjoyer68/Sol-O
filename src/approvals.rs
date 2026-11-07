@@ -115,7 +115,7 @@ pub fn approve(db: &Db, settings: &Settings, action_id: i64) -> persistence::DbR
 
     let started_at = persistence::now_iso();
     let started = Instant::now();
-    let delivery = telegram::send_message(message, settings.tool_timeout_seconds);
+    let delivery = telegram::send_message(settings, message);
     let duration_ms = started.elapsed().as_millis() as i64;
 
     let delivery = match delivery {

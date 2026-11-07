@@ -210,6 +210,26 @@ fn a_provider_outage_maps_to_the_documented_error() {
 }
 
 #[test]
+fn a_missing_provider_credential_is_a_request_time_provider_error() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    // No BASE_URL/API_KEY: the server starts, and the request reports the same
+    // provider error the reference raised when a call needed the provider.
+    let server = Server::start(&database, &[]);
+
+    let response = server.post(&json!({"agent": "researcher", "task": "do it"}));
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().unwrap();
+    assert_eq!(body["error"], "llm_error");
+    assert_eq!(
+        body["detail"],
+        "missing environment variable(s): BASE_URL, API_KEY"
+    );
+
+    assert_no_audit_rows(&database);
+}
+
+#[test]
 fn a_scripted_timeout_maps_to_the_timeout_status() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
