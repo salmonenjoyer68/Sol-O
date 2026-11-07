@@ -16,7 +16,7 @@ use crate::events::EventBus;
 use crate::http::{router, AppState};
 use crate::orchestrator::Orchestrator;
 use crate::persistence::{self, Db};
-use crate::reliability::redact;
+use crate::reliability::{redact, truncate};
 
 /// Status -> process exit code, from `EXIT_CODES` in the reference CLI.
 fn exit_code(status: &str) -> u8 {
@@ -201,7 +201,7 @@ fn show_run(run_id: &str) -> ExitCode {
         run.created_at,
         python_float(run.duration_seconds)
     );
-    println!("task: {}", take(&run.task, 300));
+    println!("task: {}", truncate(&run.task, 300));
     if let Some(warning) = run.warning.as_deref().filter(|text| !text.is_empty()) {
         println!("warning: {warning}");
     }
@@ -278,7 +278,7 @@ fn show_pending() -> ExitCode {
         );
         println!(
             "  task: {}",
-            take(&redact(&payload_text(payload, "task")), 200)
+            truncate(&redact(&payload_text(payload, "task")), 200)
         );
         println!(
             "  verdict: {}",
@@ -336,10 +336,6 @@ fn payload_text(payload: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
-}
-
-fn take(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
 }
 
 /// Python's `str(float)`: whole numbers keep a `.0` suffix.
