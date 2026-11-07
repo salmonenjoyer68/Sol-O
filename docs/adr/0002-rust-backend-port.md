@@ -111,11 +111,12 @@ Four decisions from the post-cutover review; each one was checked against the me
   `String::from_utf8_lossy` and ignores the declared `Content-Type` charset that the
   reference honours. It is a labelled `shortcut:` in `src/fetch.rs`; upgrade if non-UTF-8
   pages matter.
-- **`calc` fails outside its integer range.** Non-finite results fail with the reference's
-  `result is not a finite number`; integer `+ - * ** // %` and unary negation are checked
-  over the 128-bit signed range, and an out-of-range result fails with `integer result out
-  of range` instead of wrapping or panicking. Python's integers are arbitrary-precision,
-  so this is a deliberate deviation, chosen over a bignum dependency.
+- **`calc` fails outside its integer range.** Integer `+ - * ** // %`, unary negation,
+  `abs()` and `round(integer, n)` are checked over the 128-bit signed range, and an
+  out-of-range result fails with `integer result out of range` instead of wrapping or
+  panicking; formatting a non-finite result fails with the reference's `result is not a
+  finite number`. Python's integers are arbitrary-precision, so this is a deliberate
+  deviation, chosen over a bignum dependency.
 
 **Accepted deviations: four, not two** — the two from the cutover (Rust-shaped
 validation-error text, `tracing` log lines) plus UTF-8-only `fetch_url` decoding and the

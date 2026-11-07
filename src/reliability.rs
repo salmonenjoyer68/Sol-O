@@ -1,4 +1,5 @@
-//! Reliability helpers: redaction and codepoint-based truncation.
+//! Reliability helpers: redaction, codepoint truncation, two-decimal rounding
+//! and the run deadline.
 //!
 //! Secret values come from the startup settings snapshot; the token patterns
 //! match `app/reliability.py` so the same strings are scrubbed from logs,
@@ -11,8 +12,6 @@ use regex::{Captures, Regex};
 use serde_json::Value;
 
 use crate::config::Settings;
-
-const SECRET_ENV_VARS: [&str; 3] = ["API_KEY", "TAVILY_API_KEY", "TELEGRAM_BOT_TOKEN"];
 
 /// Secret values snapshotted once at process start; empty until initialised.
 static SECRETS: OnceLock<Vec<String>> = OnceLock::new();
@@ -30,11 +29,8 @@ fn settings_secrets(settings: &Settings) -> Vec<String> {
     ])
 }
 
-/// Fallback for a library caller that never initialised: one environment read.
 fn secrets() -> &'static [String] {
-    SECRETS.get_or_init(|| {
-        secret_values(SECRET_ENV_VARS.map(|name| std::env::var(name).unwrap_or_default()))
-    })
+    SECRETS.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
 fn secret_values<I, S>(values: I) -> Vec<String>

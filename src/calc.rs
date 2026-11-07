@@ -664,9 +664,19 @@ fn modulo(a: f64, b: f64) -> f64 {
 }
 
 fn date_from(value: &Eval) -> Result<NaiveDate, String> {
-    let text = format_value(value)?;
+    let text = python_str(value);
     NaiveDate::parse_from_str(&text, "%Y-%m-%d")
         .map_err(|_| format!("Invalid isoformat string: '{text}'"))
+}
+
+/// Python's `str(value)`, used by the date helpers: unlike `_format` it does
+/// not reject or round a float, so `str(inf)` reaches the parser as `"inf"`.
+fn python_str(value: &Eval) -> String {
+    match value {
+        Eval::Int(value) => value.to_string(),
+        Eval::Float(value) => python_float_repr(*value),
+        Eval::Text(text) => text.clone(),
+    }
 }
 
 fn round_digits(value: f64, digits: i64) -> f64 {
@@ -747,6 +757,9 @@ fn format_value(value: &Eval) -> Result<String, String> {
 
 /// Python's `repr(float)`: shortest round-trip digits, exponent >=16 or < -4.
 fn python_float_repr(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
     let rendered = format!("{value:?}");
     let Some((mantissa, exponent)) = rendered.split_once(['e', 'E']) else {
         return rendered;
@@ -898,6 +911,34 @@ mod tests {
             "days_between() takes two ISO dates"
         );
         assert_eq!(error("min()"), "min expected at least 1 argument, got 0");
+    }
+
+    #[test]
+    fn date_arguments_are_formatted_like_python_str() {
+        // The reference calls `str(value)` before `date.fromisoformat`, so a
+        // non-finite float reaches the ISO parser as "inf"/"-inf"/"nan".
+        assert_eq!(
+            error("days_between(1e308 * 10, '2026-01-01')"),
+            "Invalid isoformat string: 'inf'"
+        );
+        assert_eq!(
+            error("days_between(-1e308 * 10, '2026-01-01')"),
+            "Invalid isoformat string: '-inf'"
+        );
+        assert_eq!(
+            error("days_between('2026-01-01', 1e308 * 10 - 1e308 * 10)"),
+            "Invalid isoformat string: 'nan'"
+        );
+        assert_eq!(
+            error("days_between('2026-01-01', 'nan')"),
+            "Invalid isoformat string: 'nan'"
+        );
+        assert_eq!(value("days_between('2026-01-01','2026-03-01')"), "59");
+        // Python renders the int exactly, and the ISO parser rejects it.
+        assert_eq!(
+            error("days_between(20260101, '2026-01-02')"),
+            "Invalid isoformat string: '20260101'"
+        );
     }
 
     #[test]

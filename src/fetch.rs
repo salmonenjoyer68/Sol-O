@@ -15,6 +15,7 @@ use reqwest::{redirect, Url};
 use serde_json::{json, Value};
 
 use crate::config::Settings;
+use crate::reliability::truncate;
 
 pub const MAX_BYTES: usize = 200 * 1024;
 pub const MAX_REDIRECTS: usize = 3;
@@ -233,7 +234,7 @@ fn cap_text(text: String, max_result_chars: usize) -> (String, bool) {
     if text.chars().count() <= max_result_chars {
         return (text, false);
     }
-    (text.chars().take(max_result_chars).collect(), true)
+    (truncate(&text, max_result_chars), true)
 }
 
 /// Decode and reduce a body to visible text.
