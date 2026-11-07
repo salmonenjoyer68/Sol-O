@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::reliability::{redact, redact_value, truncate};
+use crate::reliability::{redact, redact_value, round2, truncate};
 
 /// Stored raw model output and tool args are capped, like `MAX_RAW_CHARS` in
 /// `app/reliability.py`.
@@ -705,10 +705,6 @@ fn table_columns(connection: &Connection, table: &str) -> rusqlite::Result<HashS
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<HashSet<_>>>()?;
     Ok(names)
-}
-
-fn round2(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
 }
 
 fn expand_home(raw: &str) -> PathBuf {

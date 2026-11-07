@@ -353,6 +353,33 @@ fn show_prints_the_stored_run_and_rejects_an_unknown_id() {
 }
 
 #[test]
+fn show_truncates_a_long_task_at_300_codepoints() {
+    let dir = TempDir::new().unwrap();
+    let database = dir.path().join("sol-o.db");
+    let provider = happy_provider();
+    let task = "é".repeat(400);
+    let run = cli(
+        &database,
+        &["run", &task],
+        &provider_args(&provider, &[("REQUIRE_APPROVAL", "false")]),
+    );
+    assert_eq!(run.status.code(), Some(0), "stderr: {}", stderr(&run));
+    let run_id = json_tail(&stdout(&run))["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let shown = cli(&database, &["show", &run_id], &[]);
+    assert_eq!(shown.status.code(), Some(0), "stderr: {}", stderr(&shown));
+    let line = stdout(&shown)
+        .lines()
+        .find(|line| line.starts_with("task: "))
+        .expect("the task line")
+        .to_string();
+    assert_eq!(line, format!("task: {}", "é".repeat(300)));
+}
+
+#[test]
 fn pending_lists_only_actionable_requests_and_empty_reads_cleanly() {
     let dir = TempDir::new().unwrap();
     let database = dir.path().join("sol-o.db");
