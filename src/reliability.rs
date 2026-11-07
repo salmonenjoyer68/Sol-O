@@ -65,6 +65,11 @@ pub fn truncate(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
+/// Round a duration to the two decimals stored in rows and emitted in results.
+pub fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 /// Wall-clock budget for one orchestration run, like `app.reliability.Deadline`.
 #[derive(Clone, Copy, Debug)]
 pub struct Deadline {
@@ -98,6 +103,15 @@ mod tests {
         assert_eq!(truncate("plain", 0), "");
         assert_eq!(truncate("", 5), "");
         assert_eq!(truncate("🪐🪐", 1), "🪐");
+    }
+
+    #[test]
+    fn round2_rounds_a_duration_to_two_decimals() {
+        assert_eq!(round2(0.0), 0.0);
+        assert_eq!(round2(1.234), 1.23);
+        assert_eq!(round2(1.235), 1.24);
+        assert_eq!(round2(12.3456), 12.35);
+        assert_eq!(round2(-1.234), -1.23);
     }
 
     #[test]

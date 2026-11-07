@@ -13,15 +13,13 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::agents::{
-    self, FailureType, ParseError, RunError, PLANNER_AGENT, PLAN_CONTRACT, STEP_CONTRACT,
-};
+use crate::agents::{self, FailureType, ParseError, RunError, PLANNER_AGENT, STEP_CONTRACT};
 use crate::approvals::{approval_required, create_pending};
 use crate::config::{self, Settings};
 use crate::events::EventBus;
 use crate::llm;
 use crate::persistence::{self, Db, NewAgentCall, NewToolCall, MAX_RAW_CHARS};
-use crate::reliability::{redact, truncate, Deadline};
+use crate::reliability::{redact, round2, truncate, Deadline};
 use crate::schemas::{self, step_schema, PlannedStep};
 use crate::search;
 use crate::telegram::{self, TelegramError};
@@ -149,6 +147,51 @@ impl Emitter<'_> {
     }
 }
 
+/// The `agent_failed` fields for a stop that came from a failed call.
+/// `tool_turns` is absent on paths that never ran a call.
+struct FailedStep<'a> {
+    error: &'a str,
+    message: &'a str,
+    attempts: usize,
+    tool_turns: Option<i64>,
+}
+
+/// One stop path: its optional `agent_failed` event, then `stopped`.
+struct Stop<'a> {
+    step: i64,
+    agent: &'a str,
+    status: &'a str,
+    reason: &'a str,
+    failed: Option<FailedStep<'a>>,
+}
+
+/// Emit a stop through one place so the two events cannot drift apart.
+fn emit_stop(emitter: &Emitter<'_>, stop: Stop<'_>) {
+    if let Some(failed) = stop.failed {
+        let mut data = json!({
+            "step": stop.step,
+            "agent": stop.agent,
+            "error": failed.error,
+            "error_type": failed.error,
+            "message": failed.message,
+            "attempts": failed.attempts,
+        });
+        if let Some(tool_turns) = failed.tool_turns {
+            data["tool_turns"] = json!(tool_turns);
+        }
+        emitter.emit("agent_failed", data);
+    }
+    emitter.emit(
+        "stopped",
+        json!({
+            "step": stop.step,
+            "agent": stop.agent,
+            "status": stop.status,
+            "reason": stop.reason,
+        }),
+    );
+}
+
 pub struct Orchestrator {
     pub settings: Arc<Settings>,
     pub db: Db,
@@ -239,12 +282,13 @@ impl Orchestrator {
         let call_timeout =
             Duration::from_secs_f64(self.settings.llm_timeout_seconds.min(remaining).max(0.001));
         let model = resolved_model(&self.settings, PLANNER_AGENT);
+        let contract = agents::plan_contract(self.settings.max_agents);
         let validated = match agents::run_validated(
             &self.settings,
             &self.agents_dir,
             PLANNER_AGENT,
             &user_content,
-            PLAN_CONTRACT,
+            &contract,
             &schema,
             &parse,
             None,
@@ -254,15 +298,17 @@ impl Orchestrator {
             Ok(validated) => validated,
             Err(RunError::Run(error)) => {
                 self.record_agent_call(call_row(
-                    run_id,
-                    0,
-                    PLANNER_AGENT,
-                    started_at,
-                    started,
-                    error.attempts as i64,
-                    0,
-                    model,
-                    &user_content,
+                    CallShape {
+                        run_id,
+                        step: 0,
+                        agent: PLANNER_AGENT,
+                        started_at,
+                        started,
+                        attempts: error.attempts as i64,
+                        tool_turns: 0,
+                        model,
+                        input: &user_content,
+                    },
                     error.raw.chars().count() as i64,
                     error.raw.clone(),
                     Some((&error.failure_type, &error.detail)),
@@ -276,15 +322,17 @@ impl Orchestrator {
         let raw_output =
             serde_json::to_string(&validated.output).expect("validated plan serializes");
         self.record_agent_call(call_row(
-            run_id,
-            0,
-            PLANNER_AGENT,
-            started_at,
-            started,
-            validated.attempts as i64,
-            0,
-            model,
-            &user_content,
+            CallShape {
+                run_id,
+                step: 0,
+                agent: PLANNER_AGENT,
+                started_at,
+                started,
+                attempts: validated.attempts as i64,
+                tool_turns: 0,
+                model,
+                input: &user_content,
+            },
             raw_output.chars().count() as i64,
             raw_output,
             None,
@@ -433,14 +481,15 @@ impl Orchestrator {
                         PlannerStop::Aborted(message) => return Err(message),
                     };
                     reason = Some(stop_reason.clone());
-                    emitter.emit(
-                        "stopped",
-                        json!({
-                            "step": 0,
-                            "agent": PLANNER_AGENT,
-                            "status": status,
-                            "reason": stop_reason,
-                        }),
+                    emit_stop(
+                        &emitter,
+                        Stop {
+                            step: 0,
+                            agent: PLANNER_AGENT,
+                            status,
+                            reason: &stop_reason,
+                            failed: None,
+                        },
                     );
                 }
             }
@@ -459,14 +508,15 @@ impl Orchestrator {
                     0,
                 ));
                 reason = Some(text.clone());
-                emitter.emit(
-                    "stopped",
-                    json!({
-                        "step": 0,
-                        "agent": PLANNER_AGENT,
-                        "status": status,
-                        "reason": text,
-                    }),
+                emit_stop(
+                    &emitter,
+                    Stop {
+                        step: 0,
+                        agent: PLANNER_AGENT,
+                        status,
+                        reason: &text,
+                        failed: None,
+                    },
                 );
             }
         } else {
@@ -518,25 +568,20 @@ impl Orchestrator {
                     0,
                     0,
                 ));
-                emitter.emit(
-                    "agent_failed",
-                    json!({
-                        "step": number,
-                        "agent": step.agent,
-                        "error": "timeout",
-                        "error_type": "timeout",
-                        "message": message,
-                        "attempts": 0,
-                    }),
-                );
-                emitter.emit(
-                    "stopped",
-                    json!({
-                        "step": number,
-                        "agent": step.agent,
-                        "status": status,
-                        "reason": reason,
-                    }),
+                emit_stop(
+                    &emitter,
+                    Stop {
+                        step: number,
+                        agent: &step.agent,
+                        status,
+                        reason: "run_timeout",
+                        failed: Some(FailedStep {
+                            error: FailureType::Timeout.as_str(),
+                            message: &message,
+                            attempts: 0,
+                            tool_turns: None,
+                        }),
+                    },
                 );
                 break;
             }
@@ -561,14 +606,15 @@ impl Orchestrator {
                         0,
                         0,
                     ));
-                    emitter.emit(
-                        "stopped",
-                        json!({
-                            "step": number,
-                            "agent": step.agent,
-                            "status": status,
-                            "reason": reason,
-                        }),
+                    emit_stop(
+                        &emitter,
+                        Stop {
+                            step: number,
+                            agent: &step.agent,
+                            status,
+                            reason: "run_timeout",
+                            failed: None,
+                        },
                     );
                     break;
                 }
@@ -662,39 +708,35 @@ impl Orchestrator {
                         error.tool_turns as i64,
                     );
                     self.record_agent_call(call_row(
-                        run_id,
-                        number,
-                        &failed.agent,
-                        started_at,
-                        step_started,
-                        failed.attempts as i64,
-                        failed.tool_turns,
-                        resolved_model(&self.settings, &step.agent),
-                        &message,
+                        CallShape {
+                            run_id,
+                            step: number,
+                            agent: &failed.agent,
+                            started_at,
+                            started: step_started,
+                            attempts: failed.attempts as i64,
+                            tool_turns: failed.tool_turns,
+                            model: resolved_model(&self.settings, &step.agent),
+                            input: &message,
+                        },
                         error.raw.chars().count() as i64,
                         failed.raw_output.clone(),
                         Some((&failed.error_type, &failed.message)),
                     ));
-                    emitter.emit(
-                        "agent_failed",
-                        json!({
-                            "step": number,
-                            "agent": step.agent,
-                            "error": failed.error_type.as_str(),
-                            "error_type": failed.error_type.as_str(),
-                            "message": error.detail,
-                            "attempts": error.attempts,
-                            "tool_turns": failed.tool_turns,
-                        }),
-                    );
-                    emitter.emit(
-                        "stopped",
-                        json!({
-                            "step": number,
-                            "agent": step.agent,
-                            "status": "failed",
-                            "reason": reason_text,
-                        }),
+                    emit_stop(
+                        &emitter,
+                        Stop {
+                            step: number,
+                            agent: &step.agent,
+                            status: "failed",
+                            reason: &reason_text,
+                            failed: Some(FailedStep {
+                                error: failed.error_type.as_str(),
+                                message: &error.detail,
+                                attempts: error.attempts,
+                                tool_turns: Some(failed.tool_turns),
+                            }),
+                        },
                     );
                     status = "failed";
                     failed_at = Some(step.agent.clone());
@@ -709,15 +751,17 @@ impl Orchestrator {
             let raw_output =
                 serde_json::to_string(&validated.output).expect("validated output serializes");
             self.record_agent_call(call_row(
-                run_id,
-                number,
-                &step.agent,
-                started_at,
-                step_started,
-                validated.attempts as i64,
-                validated.tool_turns as i64,
-                resolved_model(&self.settings, &step.agent),
-                &message,
+                CallShape {
+                    run_id,
+                    step: number,
+                    agent: &step.agent,
+                    started_at,
+                    started: step_started,
+                    attempts: validated.attempts as i64,
+                    tool_turns: validated.tool_turns as i64,
+                    model: resolved_model(&self.settings, &step.agent),
+                    input: &message,
+                },
                 raw_output.chars().count() as i64,
                 raw_output,
                 None,
@@ -763,16 +807,17 @@ impl Orchestrator {
                     .to_string();
                 status = "needs_clarification";
                 stopped_at = Some(step.agent.clone());
-                reason = Some(clarification);
-                emitter.emit(
-                    "stopped",
-                    json!({
-                        "step": number,
-                        "agent": step.agent,
-                        "status": status,
-                        "reason": reason,
-                    }),
+                emit_stop(
+                    &emitter,
+                    Stop {
+                        step: number,
+                        agent: &step.agent,
+                        status,
+                        reason: &clarification,
+                        failed: None,
+                    },
                 );
+                reason = Some(clarification);
                 break;
             }
 
@@ -785,21 +830,23 @@ impl Orchestrator {
                     .cloned()
                     .unwrap_or_default();
                 if revision_used {
-                    status = "partial";
-                    stopped_at = Some("checker".to_string());
-                    reason = Some(format!(
+                    let reason_text = format!(
                         "checker still rejected the revised draft with {} issue(s)",
                         issues.len()
-                    ));
-                    emitter.emit(
-                        "stopped",
-                        json!({
-                            "step": number,
-                            "agent": step.agent,
-                            "status": status,
-                            "reason": reason,
-                        }),
                     );
+                    status = "partial";
+                    stopped_at = Some("checker".to_string());
+                    emit_stop(
+                        &emitter,
+                        Stop {
+                            step: number,
+                            agent: &step.agent,
+                            status,
+                            reason: &reason_text,
+                            failed: None,
+                        },
+                    );
+                    reason = Some(reason_text);
                     break;
                 }
                 revision_used = true;
@@ -1340,37 +1387,42 @@ fn resolved_model(settings: &Settings, agent: &str) -> String {
     llm::model_for(settings, agent).unwrap_or_else(|| settings.model.clone())
 }
 
-/// One `agent_calls` row from the fields every call site already has.
-#[allow(clippy::too_many_arguments)]
-fn call_row(
-    run_id: &str,
+/// The fields shared by every `agent_calls` row, named so a new column cannot
+/// be shifted by position.
+struct CallShape<'a> {
+    run_id: &'a str,
     step: i64,
-    agent: &str,
+    agent: &'a str,
     started_at: String,
     started: Instant,
     attempts: i64,
     tool_turns: i64,
     model: String,
-    input: &str,
+    input: &'a str,
+}
+
+/// One `agent_calls` row from a `CallShape` plus the outcome of the call.
+fn call_row(
+    call: CallShape<'_>,
     output_chars: i64,
     raw_output: String,
     error: Option<(&FailureType, &str)>,
 ) -> NewAgentCall {
     NewAgentCall {
-        run_id: run_id.to_string(),
-        step,
-        agent: agent.to_string(),
-        started_at,
-        duration_ms: started.elapsed().as_millis() as i64,
-        attempts,
-        tool_turns,
+        run_id: call.run_id.to_string(),
+        step: call.step,
+        agent: call.agent.to_string(),
+        started_at: call.started_at,
+        duration_ms: call.started.elapsed().as_millis() as i64,
+        attempts: call.attempts,
+        tool_turns: call.tool_turns,
         status: if error.is_some() { "failed" } else { "ok" }.to_string(),
         error_type: error.map(|(kind, _)| kind.as_str().to_string()),
         error_message: error.map(|(_, message)| message.to_string()),
-        input_chars: input.chars().count() as i64,
+        input_chars: call.input.chars().count() as i64,
         output_chars,
         raw_output,
-        model,
+        model: call.model,
     }
 }
 
@@ -1474,10 +1526,6 @@ fn summary(agent: &str, output: &Value) -> String {
         }
     }
     format!("{agent} finished")
-}
-
-fn round2(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
 }
 
 #[cfg(test)]

@@ -148,9 +148,13 @@ fn a_planner_plan_is_filtered_and_run_as_step_one() {
     let plan_contract = format!(
         "{}{}",
         std::fs::read_to_string(Path::new(ROOT).join("agents/sun.md")).unwrap(),
-        sol_o::agents::PLAN_CONTRACT
+        sol_o::agents::plan_contract(7)
     );
     assert_eq!(requests[0].contents()[0], plan_contract);
+    assert!(
+        requests[0].contents()[0].contains("- 1 to 7 steps, executed in order."),
+        "the default contract wording changed"
+    );
     assert_eq!(
         requests[0].contents()[1],
         format!("Task:\n{TASK}\n\nAvailable agents:\n- checker\n- researcher\n- writer")
@@ -223,6 +227,31 @@ fn a_plan_over_the_cap_is_truncated() {
     assert_eq!(schema["properties"]["steps"]["maxItems"], 2);
     assert_eq!(detail["run"]["status"], "complete");
     assert_eq!(provider.requests().len(), 3);
+}
+
+#[test]
+fn the_plan_contract_states_the_configured_cap() {
+    let (_dir, provider, detail, _saved) = run_planner(
+        vec![
+            Reply::content(json!({"steps": [{"agent": "writer", "task": "draft it"}]}).to_string()),
+            Reply::content(writer_output()),
+        ],
+        &[("MAX_AGENTS", "3")],
+    );
+
+    let requests = provider.requests();
+    let schema = &requests[0].response_format().unwrap()["json_schema"]["schema"];
+    assert_eq!(schema["properties"]["steps"]["maxItems"], 3);
+    let system = &requests[0].contents()[0];
+    assert!(
+        system.contains("- 1 to 3 steps, executed in order."),
+        "the contract does not name the configured cap: {system}"
+    );
+    assert!(
+        !system.contains("7 steps") && !system.contains("1-7"),
+        "the prompt still states a competing cap: {system}"
+    );
+    assert_eq!(detail["run"]["status"], "complete");
 }
 
 #[test]
