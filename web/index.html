@@ -2090,6 +2090,27 @@ function drawTrail(planet, x, y, now) {
   ctx.restore();
 }
 
+/* Three concentric strokes make a band; each half is stroked around the disc so
+   the near side of the ring passes in front of the planet. */
+const RING_BAND = [
+  [0.88, 0.5],
+  [1, 0.34],
+  [1.12, 0.2],
+];
+function strokeRingBand(x, y, size, color, phase, start, end) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(phase);
+  ctx.lineWidth = 1.6;
+  for (const [scale, alpha] of RING_BAND) {
+    ctx.strokeStyle = hexAlpha(color, alpha);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size * 1.9 * scale, size * 0.62 * scale, 0, start, end);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawPlanet(planet, x, y, now) {
   const appear = easeOut(clamp(planet.appear, 0, 1));
   if (appear <= 0.01) return;
@@ -2099,6 +2120,7 @@ function drawPlanet(planet, x, y, now) {
   const pulse = 0.5 + 0.5 * Math.sin(t * 0.005 + planet.step * 1.7);
   const flicker = planet.failed && !reduceMotion ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
   const color = planet.failed ? "#ff5d5d" : planet.color;
+  const ringPhase = -0.42 + Math.sin(t * 0.0004 + planet.step) * 0.05;
   const glow = planet.working ? 26 + pulse * 18 : planet.done ? 14 : 9;
 
   // Gradients live in local space, so they are built once per size/colour/mode
@@ -2133,15 +2155,8 @@ function drawPlanet(planet, x, y, now) {
   ctx.restore();
 
   if (planet.ring) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(-0.42 + Math.sin(t * 0.0004 + planet.step) * 0.05);
-    ctx.strokeStyle = hexAlpha(color, 0.5);
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, size * 1.9, size * 0.62, 0, 0, TAU);
-    ctx.stroke();
-    ctx.restore();
+    // Back half only; the front half is stroked after the disc.
+    strokeRingBand(x, y, size, color, ringPhase, Math.PI, TAU);
   }
 
   ctx.save();
@@ -2167,6 +2182,11 @@ function drawPlanet(planet, x, y, now) {
   ctx.arc(0, 0, size, 0, TAU);
   ctx.fill();
   ctx.restore();
+
+  // Front half of the ring: drawn over the disc so the near side occludes it.
+  if (planet.ring) {
+    strokeRingBand(x, y, size, color, ringPhase, 0, Math.PI);
+  }
 
   if (planet.moon) {
     const moonAngle = planet.angle * 2.6 + t * 0.0006;
