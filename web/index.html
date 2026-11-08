@@ -780,7 +780,18 @@ const MOTIFS = {
 
 // Stable order: an unknown name's hash picks from the same list every reload.
 const motifNames = Object.keys(MOTIFS);
-const textureTiles = new Map();
+const tileCache = new Map();
+
+// One canvas per key: build it the first time it is asked for, then reuse it.
+function cachedTile(key, build) {
+  let tile = tileCache.get(key);
+  if (tile) return tile;
+  tile = document.createElement("canvas");
+  tile.width = tile.height = TEXTURE_TILE;
+  build(tile.getContext("2d"));
+  tileCache.set(key, tile);
+  return tile;
+}
 
 // Deterministic generator so a role's texture is identical across reloads.
 function textureRandom(seed) {
@@ -793,20 +804,14 @@ function textureRandom(seed) {
 
 function textureTile(style) {
   const key = `${style.texture}:${style.seed || 0}`;
-  let tile = textureTiles.get(key);
-  if (tile) return tile;
-  tile = document.createElement("canvas");
-  tile.width = TEXTURE_TILE;
-  tile.height = TEXTURE_TILE;
-  const g = tile.getContext("2d");
-  const centre = TEXTURE_TILE / 2;
-  // Rotated once by the style seed; the disc radius in tile space is what
-  // survives the 2.2x stamp, so every motif is drawn within it.
-  g.translate(centre, centre);
-  g.rotate((style.seed || 0) * 0.011);
-  MOTIFS[style.texture](g, centre / TEXTURE_STAMP, textureRandom(style.seed || 0));
-  textureTiles.set(key, tile);
-  return tile;
+  return cachedTile(key, (g) => {
+    const centre = TEXTURE_TILE / 2;
+    // Rotated once by the style seed; the disc radius in tile space is what
+    // survives the 2.2x stamp, so every motif is drawn within it.
+    g.translate(centre, centre);
+    g.rotate((style.seed || 0) * 0.011);
+    MOTIFS[style.texture](g, centre / TEXTURE_STAMP, textureRandom(style.seed || 0));
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1973,28 +1978,23 @@ function drawOrbitRings() {
 }
 
 // One cached, deterministic photosphere: low-frequency bright and dark cells.
-let photosphereTile = null;
 function sunPhotosphere() {
-  if (photosphereTile) return photosphereTile;
-  const tile = document.createElement("canvas");
-  tile.width = tile.height = TEXTURE_TILE;
-  const g = tile.getContext("2d");
-  const rand = textureRandom(7);
-  for (let i = 0; i < 34; i += 1) {
-    const x = rand() * TEXTURE_TILE;
-    const y = rand() * TEXTURE_TILE;
-    const r = TEXTURE_TILE * (0.06 + rand() * 0.11);
-    const bright = rand() > 0.45;
-    const cell = g.createRadialGradient(x, y, 0, x, y, r);
-    cell.addColorStop(0, bright ? "rgba(255, 246, 205, 0.5)" : "rgba(150, 48, 0, 0.4)");
-    cell.addColorStop(1, bright ? "rgba(255, 246, 205, 0)" : "rgba(150, 48, 0, 0)");
-    g.fillStyle = cell;
-    g.beginPath();
-    g.arc(x, y, r, 0, TAU);
-    g.fill();
-  }
-  photosphereTile = tile;
-  return photosphereTile;
+  return cachedTile("sun", (g) => {
+    const rand = textureRandom(7);
+    for (let i = 0; i < 34; i += 1) {
+      const x = rand() * TEXTURE_TILE;
+      const y = rand() * TEXTURE_TILE;
+      const r = TEXTURE_TILE * (0.06 + rand() * 0.11);
+      const bright = rand() > 0.45;
+      const cell = g.createRadialGradient(x, y, 0, x, y, r);
+      cell.addColorStop(0, bright ? "rgba(255, 246, 205, 0.5)" : "rgba(150, 48, 0, 0.4)");
+      cell.addColorStop(1, bright ? "rgba(255, 246, 205, 0)" : "rgba(150, 48, 0, 0)");
+      g.fillStyle = cell;
+      g.beginPath();
+      g.arc(x, y, r, 0, TAU);
+      g.fill();
+    }
+  });
 }
 
 function drawSun(now) {
@@ -2060,10 +2060,19 @@ function drawSun(now) {
   ctx.beginPath();
   ctx.arc(CX, CY, core, 0, TAU);
   ctx.clip();
+  ctx.save();
   ctx.translate(CX, CY);
   ctx.rotate(t * 0.00004);
   const side = core * 4;
   ctx.drawImage(sunPhotosphere(), -side / 2, -side / 2, side, side);
+  ctx.restore();
+  // The tile's bright cells would re-light the limb, so the body shading is
+  // laid back over it at partial alpha: the rim darkens, the cells stay.
+  ctx.globalAlpha = 0.7;
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.arc(CX, CY, core, 0, TAU);
+  ctx.fill();
   ctx.restore();
 
   if (state.pending) {
@@ -2128,19 +2137,21 @@ function drawTrail(planet, x, y, now) {
 }
 
 /* Three concentric strokes make a band; each half is stroked around the disc so
-   the near side of the ring passes in front of the planet. */
+   the near side of the ring passes in front of the planet. Alpha falls as the
+   stroke widens, keeping the band soft at its outer edge. */
 const RING_BAND = [
-  [0.88, 0.5],
-  [1, 0.34],
-  [1.12, 0.2],
+  [0.88, 0.5, 1.2],
+  [1, 0.34, 1.6],
+  [1.12, 0.2, 1.9],
 ];
-function strokeRingBand(x, y, size, color, phase, start, end) {
+function strokeRingBand(x, y, size, styles, phase, start, end) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(phase);
-  ctx.lineWidth = 1.6;
-  for (const [scale, alpha] of RING_BAND) {
-    ctx.strokeStyle = hexAlpha(color, alpha);
+  for (let i = 0; i < RING_BAND.length; i += 1) {
+    const [scale, , width] = RING_BAND[i];
+    ctx.strokeStyle = styles[i];
+    ctx.lineWidth = width;
     ctx.beginPath();
     ctx.ellipse(0, 0, size * 1.9 * scale, size * 0.62 * scale, 0, start, end);
     ctx.stroke();
@@ -2171,13 +2182,16 @@ function drawPlanet(planet, x, y, now) {
     halo.addColorStop(0, hexAlpha(color, planet.working ? 0.42 : 0.22));
     halo.addColorStop(1, hexAlpha(color, 0));
     planet.halo = halo;
-    const surface = ctx.createRadialGradient(
+    const shading = ctx.createRadialGradient(
       -size * 0.35, -size * 0.4, size * 0.1, 0, 0, size
     );
-    surface.addColorStop(0, lighten(color, 0.45));
-    surface.addColorStop(0.55, color);
-    surface.addColorStop(1, darken(color, 0.45));
-    planet.surface = surface;
+    shading.addColorStop(0, lighten(color, 0.45));
+    shading.addColorStop(0.55, color);
+    shading.addColorStop(1, darken(color, 0.45));
+    planet.shading = shading;
+    // Stroke colour strings depend only on the resolved colour, so they are
+    // built here with the gradients and re-used by both ring halves.
+    planet.ringStyles = RING_BAND.map(([, alpha]) => hexAlpha(color, alpha));
   }
 
   ctx.save();
@@ -2193,7 +2207,7 @@ function drawPlanet(planet, x, y, now) {
 
   if (planet.ring) {
     // Back half only; the front half is stroked after the disc.
-    strokeRingBand(x, y, size, color, ringPhase, Math.PI, TAU);
+    strokeRingBand(x, y, size, planet.ringStyles, ringPhase, Math.PI, TAU);
   }
 
   ctx.save();
@@ -2212,9 +2226,19 @@ function drawPlanet(planet, x, y, now) {
   const stamp = size * TEXTURE_STAMP * 2;
   ctx.drawImage(planet.tex, -stamp / 2, -stamp / 2, stamp, stamp);
   ctx.restore();
+  // A failed planet is fully red: multiply the stamped texture down inside the
+  // disc clip so the white cap motif cannot survive, while its variation does.
+  if (planet.failed) {
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, size, 0, TAU);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+  }
   // Shading, not paint: the lit gradient must not bury the texture.
   ctx.globalAlpha *= 0.62;
-  ctx.fillStyle = planet.surface;
+  ctx.fillStyle = planet.shading;
   ctx.beginPath();
   ctx.arc(0, 0, size, 0, TAU);
   ctx.fill();
@@ -2222,7 +2246,7 @@ function drawPlanet(planet, x, y, now) {
 
   // Front half of the ring: drawn over the disc so the near side occludes it.
   if (planet.ring) {
-    strokeRingBand(x, y, size, color, ringPhase, 0, Math.PI);
+    strokeRingBand(x, y, size, planet.ringStyles, ringPhase, 0, Math.PI);
   }
 
   if (planet.moon) {
