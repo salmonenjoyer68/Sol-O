@@ -13,3 +13,7 @@ Terms Sol-O's code and prompts rely on. One line each; the code is authoritative
 - **System step** — a step the Sun always appends after the LLM plan (`SYSTEM_STEPS`: `logger`, then `notifier`). The planner never sees or chooses it.
 - **Service** — the `sol-o` binary: `serve` exposes the HTTP API, SSE stream and UI; the other subcommands are the operator CLI. One process, one SQLite file.
 - **Reference implementation** — the frozen Python tree (`app/`, `tools/`, their tests) kept after ADR 0002. It reads as documentation; no new features land there.
+- **Surface texture** — the detail inside a planet's disc; excludes the halo, the ring band and the label.
+- **Ring band** — the ring drawn around one planet; distinct from the orbit ring the planet travels on.
+- **Orbit ring** — the dashed path a planet travels along; distinct from the ring band around the planet itself.
+- **Photosphere** — the Sun's disc; the Sun's counterpart of a planet's surface texture.
