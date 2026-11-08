@@ -1972,6 +1972,31 @@ function drawOrbitRings() {
   });
 }
 
+// One cached, deterministic photosphere: low-frequency bright and dark cells.
+let photospherePattern = null;
+function sunPhotosphere() {
+  if (photospherePattern) return photospherePattern;
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = TEXTURE_TILE;
+  const g = tile.getContext("2d");
+  const rand = textureRandom(7);
+  for (let i = 0; i < 34; i += 1) {
+    const x = rand() * TEXTURE_TILE;
+    const y = rand() * TEXTURE_TILE;
+    const r = TEXTURE_TILE * (0.06 + rand() * 0.11);
+    const bright = rand() > 0.45;
+    const cell = g.createRadialGradient(x, y, 0, x, y, r);
+    cell.addColorStop(0, bright ? "rgba(255, 246, 205, 0.5)" : "rgba(150, 48, 0, 0.4)");
+    cell.addColorStop(1, bright ? "rgba(255, 246, 205, 0)" : "rgba(150, 48, 0, 0)");
+    g.fillStyle = cell;
+    g.beginPath();
+    g.arc(x, y, r, 0, TAU);
+    g.fill();
+  }
+  photospherePattern = ctx.createPattern(tile, "repeat");
+  return photospherePattern;
+}
+
 function drawSun(now) {
   // Freezing t freezes the corona pulse, the ray rotation and the ring alphas.
   const t = reduceMotion ? 0 : now;
@@ -2015,11 +2040,11 @@ function drawSun(now) {
   }
   ctx.restore();
 
-  const body = ctx.createRadialGradient(CX - core * 0.3, CY - core * 0.32, core * 0.08, CX, CY, core);
-  body.addColorStop(0, "#fffdee");
-  body.addColorStop(0.38, "#ffe27a");
-  body.addColorStop(0.72, "#ffab3d");
-  body.addColorStop(1, "#ff6a00");
+  const body = ctx.createRadialGradient(CX - core * 0.3, CY - core * 0.32, core * 0.06, CX, CY, core);
+  body.addColorStop(0, "#fffdf0");
+  body.addColorStop(0.26, "#ffe27a");
+  body.addColorStop(0.62, "#ff9f2e");
+  body.addColorStop(1, "#c2410a");
   ctx.save();
   ctx.shadowColor = "rgba(255, 176, 60, 0.85)";
   ctx.shadowBlur = 42 + pulse * 22;
@@ -2027,6 +2052,17 @@ function drawSun(now) {
   ctx.beginPath();
   ctx.arc(CX, CY, core, 0, TAU);
   ctx.fill();
+  ctx.restore();
+
+  // Granulation turns with the rays' clock; the clipped pattern wraps forever.
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(CX, CY, core, 0, TAU);
+  ctx.clip();
+  ctx.translate(CX, CY);
+  ctx.rotate(t * 0.00004);
+  ctx.fillStyle = sunPhotosphere();
+  ctx.fillRect(-core, -core, core * 2, core * 2);
   ctx.restore();
 
   if (state.pending) {
