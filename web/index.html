@@ -1973,9 +1973,9 @@ function drawOrbitRings() {
 }
 
 // One cached, deterministic photosphere: low-frequency bright and dark cells.
-let photospherePattern = null;
+let photosphereTile = null;
 function sunPhotosphere() {
-  if (photospherePattern) return photospherePattern;
+  if (photosphereTile) return photosphereTile;
   const tile = document.createElement("canvas");
   tile.width = tile.height = TEXTURE_TILE;
   const g = tile.getContext("2d");
@@ -1993,8 +1993,8 @@ function sunPhotosphere() {
     g.arc(x, y, r, 0, TAU);
     g.fill();
   }
-  photospherePattern = ctx.createPattern(tile, "repeat");
-  return photospherePattern;
+  photosphereTile = tile;
+  return photosphereTile;
 }
 
 function drawSun(now) {
@@ -2054,15 +2054,16 @@ function drawSun(now) {
   ctx.fill();
   ctx.restore();
 
-  // Granulation turns with the rays' clock; the clipped pattern wraps forever.
+  // Granulation turns with the rays' clock; drawn once at twice the core
+  // diameter so no tile edge can land inside the clipped disc.
   ctx.save();
   ctx.beginPath();
   ctx.arc(CX, CY, core, 0, TAU);
   ctx.clip();
   ctx.translate(CX, CY);
   ctx.rotate(t * 0.00004);
-  ctx.fillStyle = sunPhotosphere();
-  ctx.fillRect(-core, -core, core * 2, core * 2);
+  const side = core * 4;
+  ctx.drawImage(sunPhotosphere(), -side / 2, -side / 2, side, side);
   ctx.restore();
 
   if (state.pending) {
