@@ -284,17 +284,21 @@
   #roster-rows { overflow: auto; flex: 1; min-height: 0; }
   #roster .empty { margin: 0; padding: 12px; font-size: 12px; line-height: 1.55; color: var(--muted); }
   #roster .row {
-    display: grid; grid-template-columns: 9px 1fr; gap: 10px; padding: 10px 12px;
+    display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 10px 12px;
     border-top: 1px solid var(--border); cursor: pointer;
   }
   #roster .row:first-child { border-top: 0; }
   #roster .row:hover { background: rgba(236, 231, 220, 0.04); }
   #roster .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  #roster .dot {
-    width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--dot);
+  #roster .step {
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; line-height: 1.35;
+    color: var(--row-accent, var(--accent));
   }
-  #roster .nm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  #roster .agent { font-size: 13px; font-weight: 600; }
+  #roster .nm { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  #roster .agent {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px; font-weight: 600;
+  }
   #roster .role {
     margin-top: 1px; font-size: 12px; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -316,12 +320,13 @@
     background: rgba(236, 231, 220, 0.1); overflow: hidden;
   }
   #roster .bar i {
-    display: block; height: 100%; width: 0; border-radius: var(--radius); background: var(--dot);
+    display: block; height: 100%; width: 0; border-radius: var(--radius);
+    background: var(--row-accent, var(--accent));
     transition: width var(--dur-slow) var(--ease);
   }
   #roster .row.failed .bar i { background: var(--error); }
   #roster .row.working .bar i {
-    background: linear-gradient(90deg, transparent, var(--dot), transparent);
+    background: linear-gradient(90deg, transparent, var(--row-accent, var(--accent)), transparent);
     background-size: 200% 100%; animation: roster-shimmer 1.2s linear infinite;
   }
   @keyframes roster-shimmer {
@@ -502,10 +507,10 @@
     </div>
   </div>
   <div id="sheet-body">
-    <aside id="roster" aria-label="Agent roster">
-      <div class="rh"><span>Agents</span><span id="roster-count" class="count"></span></div>
+    <aside id="roster" aria-label="Planet roster">
+      <div class="rh"><span>Planets</span><span id="roster-count" class="count"></span></div>
       <div id="roster-rows">
-        <p class="empty">No run yet — planned agents appear here.</p>
+        <p class="empty">No run yet — the Sun's plan appears here.</p>
       </div>
     </aside>
 
@@ -859,7 +864,7 @@ function setSun(status, detail) {
 }
 
 function showPlanCount(count) {
-  planCount.textContent = `${count} agent${count === 1 ? "" : "s"} planned`;
+  planCount.textContent = `${count} planet${count === 1 ? "" : "s"} planned`;
   planCount.classList.remove("hidden");
 }
 
@@ -1049,18 +1054,19 @@ function renderRoster() {
   rosterCount.textContent = total ? `${completed} / ${total} steps` : "";
   if (!rows.length) {
     rosterRows.innerHTML = '<p class="empty">' + (state.records.length
-      ? "Waiting for the plan…"
-      : "No run yet — planned agents appear here.") + "</p>";
+      ? "Waiting for the Sun's plan…"
+      : "No run yet — the Sun's plan appears here.") + "</p>";
     return;
   }
   rosterRows.innerHTML = rows.map((row) => {
     const status = row.status;
     const role = AGENT_ROLE[row.agent] || row.task || "agent";
     const state_ = status.toLowerCase();
-    return `<div class="row ${state_}" style="--dot:${row.accent}" role="button" tabindex="0"` +
+    const step = String(row.step).padStart(2, "0");
+    return `<div class="row ${state_}" style="--row-accent:${row.accent}" role="button" tabindex="0"` +
       ` data-step="${row.step}" data-agent="${escapeHtml(row.agent)}"` +
-      ` aria-label="Open ${escapeHtml(row.agent)} details, ${status}">` +
-      `<span class="dot"></span><div>` +
+      ` aria-label="Open ${escapeHtml(row.agent)} step ${row.step} details, ${status}">` +
+      `<span class="step" aria-hidden="true">${step}</span><div>` +
       `<div class="nm"><span class="agent">${escapeHtml(row.agent)}</span>` +
       `<span class="chip ${state_}">${status}</span></div>` +
       `<div class="role">${escapeHtml(role.slice(0, 46))}</div>` +
