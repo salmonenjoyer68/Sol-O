@@ -8,7 +8,6 @@
 <style>
   :root {
     --bg: #0c0b09;
-    --deep: #080706;
     --surface: #13110e;
     --fg: #ece7dc;
     --muted: #a39a89;
@@ -18,8 +17,6 @@
     --warning: #e0a35c;
     --error: #e28372;
     --info: #8fb3d9;
-    --ok: var(--success);
-    --bad: var(--error);
     --radius: 2px;
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
     --dur-fast: 120ms;
@@ -48,7 +45,7 @@
     position: relative; z-index: 1;
     height: 100vh; display: grid;
     grid-template-columns: clamp(320px, 28vw, 400px) minmax(0, 1fr) 300px;
-    grid-template-rows: var(--header-h) minmax(0, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
     grid-template-areas:
       "bar bar bar"
       "feed stage roster"
@@ -62,7 +59,7 @@
 
   /* Header: the single bar; absorbs the old product bar. */
   #bar {
-    grid-area: bar; min-width: 0;
+    grid-area: bar; min-width: 0; min-height: 56px;
     display: flex; align-items: center; gap: 12px;
     padding: 0 16px;
     background: var(--surface); border-bottom: 1px solid var(--border);
@@ -390,8 +387,7 @@
   #sheet .sheet-head { display: none; }
 
   @media (max-width: 1179.98px) {
-    /* The header wraps to two rows here; the replay notice hangs below it. */
-    :root { --header-h: 83px; }
+    /* The header wraps to two rows here; --header-h is measured from it. */
     #app {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -582,6 +578,14 @@ function syncStage() {
   CY = box.top + box.height / 2;
 }
 
+function syncHeaderHeight() {
+  // The header wraps below 1180px; surfaces offset from its measured height.
+  // A full-screen result or drawer hides the header, so keep the last value.
+  const height = bar.offsetHeight;
+  if (height) document.documentElement.style.setProperty("--header-h", `${height}px`);
+  syncStage();
+}
+
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth;
@@ -591,7 +595,7 @@ function resize() {
   canvas.style.width = W + "px";
   canvas.style.height = H + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  syncStage();
+  syncHeaderHeight();
   makeBackground();
   makeStars();
 }
@@ -787,7 +791,6 @@ const state = {
   lastStopReason: "",
   lastFailure: null,
   lastResultStatus: null,
-  lastRunStatus: null,
 };
 
 let stars = [];
@@ -816,6 +819,7 @@ function makeStars() {
 /* DOM references                                                      */
 /* ------------------------------------------------------------------ */
 
+const bar = document.getElementById("bar");
 const taskInput = document.getElementById("task");
 const cmdbar = document.getElementById("cmdbar");
 const runButton = document.getElementById("run");
@@ -1038,8 +1042,26 @@ function rosterOf(records) {
     }
     const status = STATUS_BY_EVENT[name];
     if (!status || isPlannerEvent(data)) return;
-    const row = rows.get(`${data.step}:${data.agent}`) ||
-      [...rows.values()].find((item) => item.agent === data.agent);
+    let row;
+    if (data.step != null) {
+      // System (logger/notifier) and revision steps are not in plan_ready:
+      // give each its own row instead of restyling an older row by agent.
+      const key = `${data.step}:${data.agent}`;
+      row = rows.get(key);
+      if (!row) {
+        row = {
+          step: data.step,
+          agent: data.agent,
+          task: "",
+          status: "Idle",
+          accent: styleFor(data.agent).color,
+        };
+        rows.set(key, row);
+        total += 1;
+      }
+    } else {
+      row = [...rows.values()].find((item) => item.agent === data.agent);
+    }
     if (!row) return;
     if (name === "agent_done" && !counted.has(row.step)) {
       counted.add(row.step);
@@ -1047,7 +1069,7 @@ function rosterOf(records) {
     }
     if (row.status !== "Failed") row.status = status;
   });
-  return { rows: [...rows.values()], completed, total };
+  return { rows: [...rows.values()].sort((a, b) => a.step - b.step), completed, total };
 }
 
 function recordTime(record) {
@@ -1055,7 +1077,20 @@ function recordTime(record) {
   return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString([], { hour12: false }) : "";
 }
 
+/* Stored runs carry UTC stamps; the picker matches the feed's local clock. */
+function localStamp(value) {
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return String(value || "").slice(5, 16);
+  const date = new Date(stamp);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 window.SolO = {
+  summary(records) {
+    return rosterOf(records);
+  },
   roster(records) {
     return rosterOf(records).rows;
   },
@@ -1099,8 +1134,7 @@ function renderRoster() {
   const focused = document.activeElement;
   const rowEl = focused && focused.closest ? focused.closest("#roster-rows .row[data-agent]") : null;
   const focusKey = rowEl ? { step: rowEl.dataset.step, agent: rowEl.dataset.agent } : null;
-  const rows = window.SolO.roster(state.records);
-  const { completed, total } = window.SolO.progress(state.records);
+  const { rows, completed, total } = window.SolO.summary(state.records);
   rosterCount.textContent = total ? `${completed} / ${total} steps` : "";
   if (!rows.length) {
     rosterRows.innerHTML = '<p class="empty">' + (state.records.length
@@ -1185,6 +1219,8 @@ function planetFor(step, agent, placeholder) {
 }
 
 function resetScene() {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
   state.plans = [];
   state.planets.clear();
   state.alignPhase = null;
@@ -1229,7 +1265,7 @@ function syncDecisionGate() {
     ? "Stored pending action · replay is read-only · nothing will be sent"
     : deciding
       ? "Sending your decision…"
-      : "Approval required · nothing has been sent";
+      : "Approval required · nothing has been sent · the decision is final";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1328,11 +1364,10 @@ function applyEvent(record) {
       } else {
         setSun("rejected", data.decision);
       }
-      showResult(data.decision === "approved" ? runStatus : "rejected");
+      autoResult(data.decision === "approved" ? runStatus : "rejected");
       break;
     }
     case "all_done": {
-      state.lastRunStatus = data.status;
       state.lastSeconds = data.seconds != null ? data.seconds : null;
       if (data.status === "complete") {
         setSun("complete", `finished in ${data.seconds}s`);
@@ -1341,7 +1376,7 @@ function applyEvent(record) {
         markSkipped();
         setSun(data.status || "complete", data.status || "");
       }
-      showResult(data.status);
+      autoResult(data.status);
       refreshRuns();
       break;
     }
@@ -1369,7 +1404,7 @@ function applyEvent(record) {
       }
       state.slowUntil = performance.now() + 2500;
       setSun("failed", data.error_type || "failed");
-      showResult("failed", data);
+      autoResult("failed", data);
       refreshRuns();
       break;
     }
@@ -1502,6 +1537,7 @@ function clearReplayTimers() {
 function setReplayControls(visible) {
   replayControls.classList.toggle("hidden", !visible);
   syncReplayControls();
+  syncHeaderHeight();
 }
 
 function syncReplayControls() {
@@ -1631,7 +1667,7 @@ async function refreshRuns() {
     const rows = await response.json();
     const current = replaySelect.value;
     replaySelect.innerHTML = '<option value="">Replay a run…</option>' + rows.map((row) => {
-      const when = (row.created_at || "").replace("T", " ").slice(5, 16);
+      const when = localStamp(row.created_at);
       const label = `${when} · ${runStateLabel(row.status)} · ${(row.task || "").slice(0, 42)}`;
       return `<option value="${escapeHtml(row.id)}">${escapeHtml(label)}</option>`;
     }).join("");
@@ -1687,6 +1723,23 @@ function lastCheckerIssues(outputs) {
 }
 
 let outputOpener = null;
+let resultTimer = 0;
+
+function autoResult(status, data) {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
+  const compact = window.matchMedia("(max-width: 1179.98px)").matches;
+  // Below 1180px the result is full-screen: let the 5.4s alignment finish first.
+  const wait = status === "complete" && compact && !reduceMotion ? 5600 : 0;
+  if (!wait) {
+    showResult(status, data);
+    return;
+  }
+  resultTimer = setTimeout(() => {
+    resultTimer = 0;
+    showResult(status, data);
+  }, wait);
+}
 
 function closeOutput() {
   outputBox.classList.add("hidden");
@@ -1697,6 +1750,8 @@ function closeOutput() {
 }
 
 async function showResult(status, data) {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
   state.lastResultStatus = status;
   closeDrawer();
   if (!outputBox.contains(document.activeElement)) outputOpener = document.activeElement;
@@ -1725,8 +1780,9 @@ async function showResult(status, data) {
   outputMeta.textContent = bits.join(" · ");
 
   if (status === "complete") {
-    // The plan's agent count, not the done planets: checker revisions add planets.
-    const count = state.plans.length;
+    // The step total includes system and revision steps; plan_ready does not.
+    const total = window.SolO.progress(state.records).total;
+    const count = total || state.plans.length;
     const elapsed = seconds != null ? ` · ${Math.round(seconds * 10) / 10}s` : "";
     outputTitle.textContent = `${count ? `All ${count} planets completed` : "Run completed"}${elapsed}`;
   } else {
@@ -1778,7 +1834,8 @@ let drawerToken = 0;
 let drawerHadResult = false;
 
 const STATUS_TONE = {
-  Idle: "#a39a89", Called: "#8fb3d9", Working: "#e9b45c", Done: "#8cc79d", Failed: "#e28372",
+  Idle: "var(--muted)", Called: "var(--info)", Working: "var(--accent)",
+  Done: "var(--success)", Failed: "var(--error)",
 };
 
 function planetStatus(planet) {
@@ -2528,6 +2585,7 @@ function setSheetTab(name) {
 /* Full-screen result or drawer on small screens; the chrome steps aside. */
 function setModal(open) {
   document.body.classList.toggle("modal-open", open);
+  if (!open) syncHeaderHeight();
   syncCmdbarHeight();
 }
 
@@ -2613,6 +2671,7 @@ resize();
 resetScene();
 setSun("idle", "");
 syncCmdbarHeight();
+if (document.fonts) document.fonts.ready.then(syncHeaderHeight);
 /* Header wrapping, dock height and the sheet all move the stage box. */
 new ResizeObserver(syncStage).observe(document.getElementById("stage"));
 refreshRuns();
