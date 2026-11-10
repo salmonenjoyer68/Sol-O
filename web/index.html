@@ -374,10 +374,12 @@
     text-transform: uppercase; color: var(--muted); font-family: var(--font-mono);
   }
   #output-body {
-    padding: 10px 12px 14px; overflow: auto; min-height: 0;
+    flex: 1 1 auto; padding: 10px 12px 14px; overflow: auto; min-height: 0;
+    overscroll-behavior: contain;
     white-space: pre-wrap; word-break: break-word;
     font-size: 14px; line-height: 1.6; color: var(--fg);
   }
+  #output-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #output .actions { flex: none; display: flex; justify-content: flex-end; padding: 0 12px 12px; }
   #output .actions button { height: 30px; color: var(--accent); }
   #pill { cursor: pointer; }
@@ -444,7 +446,13 @@
       padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
                env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
     }
-    #output { z-index: 34; }
+    /* The result fills the viewport down to the safe area; its body scrolls. */
+    #output {
+      z-index: 34;
+      padding-top: env(safe-area-inset-top, 0);
+      padding-right: env(safe-area-inset-right, 0);
+      padding-left: env(safe-area-inset-left, 0);
+    }
     #output-body, #panel-body { padding-bottom: 24px; }
     body.modal-open #bar, body.modal-open #cmdbar, body.modal-open #sheet { display: none; }
 
@@ -1720,7 +1728,7 @@ async function showResult(status, data) {
     // The plan's agent count, not the done planets: checker revisions add planets.
     const count = state.plans.length;
     const elapsed = seconds != null ? ` · ${Math.round(seconds * 10) / 10}s` : "";
-    outputTitle.textContent = `${count ? `All ${count} agents completed` : "Run completed"}${elapsed}`;
+    outputTitle.textContent = `${count ? `All ${count} planets completed` : "Run completed"}${elapsed}`;
   } else {
     // Every other outcome keeps the neutral header: never claim success.
     outputTitle.textContent = "Result";
@@ -1757,7 +1765,7 @@ async function showResult(status, data) {
   }
 
   outputBody.textContent = text;
-  outputBox.scrollTop = 0;
+  outputBody.scrollTop = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2585,9 +2593,13 @@ rosterRows.addEventListener("keydown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  // Escape closes one layer at a time, so the drawer's opener stays visible.
+  // Escape closes one layer at a time, so the opener stays visible.
   if (!panel.classList.contains("hidden")) {
     closeDrawer();
+    return;
+  }
+  if (!outputBox.classList.contains("hidden")) {
+    closeOutput();
     return;
   }
   setSheet(false);
