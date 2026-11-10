@@ -6,9 +6,11 @@
 
 Automates customer inquiries: **researcher → writer → checker → logger → notifier** (Tavily search, SQLite audit log, Telegram delivery).
 
-![Sol-O live solar-system UI](docs/images/web-ui.webp)
+![Sol-O console with a completed run's planets aligned](docs/images/web-ui.webp)
 
-*Live run: each agent is a planet that appears when the Sun calls it, the roster tracks every agent's state and step progress, the activity feed streams timestamped backend events in each agent's colour, and the result card shows the final draft when the planets align.*
+*A completed run: each step is a planet that appears when the Sun calls it, the roster gives every step — plan, system, and revision — its own row with status and progress, the activity feed streams timestamped backend events in each agent's colour, and the planets align around the Sun; the result opens in the left rail.*
+
+What the console is for and how it should read is in [PRODUCT.md](PRODUCT.md); its tokens, type, layout and motion are in [DESIGN.md](DESIGN.md). Terms are in [GLOSSARY.md](GLOSSARY.md).
 
 ## Setup
 ```bash
@@ -28,7 +30,7 @@ cargo run -- serve        # http://127.0.0.1:8000/ (--host and --port override)
 ```
 
 ## Live UI
-Open `http://127.0.0.1:8000/` while the API runs: a canvas solar system shows planets appearing, working, and finishing from real backend events over SSE (`GET /stream`). The command bar queues `POST /orchestrate`; the replay list reads `GET /runs/{id}/events` and can be paused, resumed, and played at 2x. A roster on the right mirrors every planned agent with its status and step progress, and the activity feed streams the same events with their recorded timestamps. When a run ends, the planets align and a result card shows the final draft, clarification, failure or rejection (click the status pill to reopen it). Click a planet or a roster row for that agent's role, task, duration and raw output; pending actions open a blocking approval gate that only a live run can decide. Below 768px the roster and feed fold into one tabbed sheet. `web/index.html` is self-contained with no build step; its only external request is one Google Fonts stylesheet, with a system fallback.
+Open `http://127.0.0.1:8000/` while the API runs: a canvas solar system shows planets appearing, working, and finishing from real backend events over SSE (`GET /stream`). The command dock queues `POST /orchestrate`; the replay list reads `GET /runs/{id}/events` and can be paused, resumed, and played at 2x, with options labelled in local time. A planet roster on the right gives every step its own row with status and step progress, and the activity feed streams the same events with their recorded timestamps. When a run ends, the planets align and the result opens in the left rail with the final draft, clarification, failure or rejection (click the status pill to reopen it); below 1180px the result is a full-screen sheet that opens after the alignment on a completed run. Click a planet or a roster row for that step's role, task, duration and raw output; pending actions open a blocking approval gate that only a live run can decide. Below 1180px the roster and feed fold into one tabbed sheet. `web/index.html` is self-contained with no build step; its only external request is one Google Fonts stylesheet, with a system fallback.
 
 ## Planet tools
 Planets may ask the Sun to run a tool before answering: they return `{"tool_requests": [{"tool": ..., "args": {...}}]}`, the Sun executes it, records it in `tool_calls`, and feeds the result back for at most `MAX_TOOL_TURNS` tool turns per step (default 3). Every result keeps `tool`, `ok` and a `truncated` flag: an oversized result is trimmed to the result budget (a string is clipped, a list drops its trailing items and clips the last, a dict clips its longest text field) and is never replaced by a placeholder, while a requested `limit` is clamped into 1..`MAX_RESULT_ITEMS` before the tool runs.

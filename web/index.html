@@ -7,179 +7,217 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
   :root {
-    --bg: #05060d;
-    --fg: #e8ecff;
-    --muted: #8b95b8;
-    --border: rgba(142, 158, 220, 0.22);
-    --surface: rgba(12, 15, 32, 0.78);
-    --accent: #ffd36b;
-    --success: #4ade80;
-    --error: #f87171;
-    --ok: var(--success);
-    --bad: var(--error);
-    --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+    --bg: #0c0b09;
+    --surface: #13110e;
+    --fg: #ece7dc;
+    --muted: #a39a89;
+    --border: rgba(236, 231, 220, 0.13);
+    --accent: #e9b45c;
+    --success: #8cc79d;
+    --warning: #e0a35c;
+    --error: #e28372;
+    --info: #8fb3d9;
+    --radius: 2px;
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
     --dur-fast: 120ms;
     --dur-slow: 240ms;
-    --space-1: 8px;
-    --space-2: 16px;
-    --space-3: 24px;
-    --space-6: 48px;
-    --nav-h: 56px;
-    /* Measured height of the mobile command bar the sheet stacks above. */
-    --cmdbar-h: 128px;
+    --header-h: 56px;
+    /* Measured height of the command dock the sheet and drawer stack above. */
+    --dock-h: 76px;
     --font-ui: "Space Grotesk", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
-  html { height: 100%; overflow-x: hidden; scroll-behavior: smooth; }
   html, body {
-    margin: 0; padding: 0;
+    margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--fg);
-    font-family: var(--font-ui);
+    font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
-  body { min-height: 100%; }
+  body { overflow: hidden; }
   a:link, a:visited { color: inherit; }
   button, input, select, textarea { font-family: inherit; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  canvas#sky { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  canvas#sky { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; z-index: 0; }
 
-  #topbar {
-    position: fixed; top: var(--nav-h); left: 0; right: 0; height: 58px; z-index: 20;
-    display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px;
-    background: linear-gradient(180deg, rgba(4,5,12,0.92), rgba(4,5,12,0.45));
-    border-bottom: 1px solid var(--border);
-    backdrop-filter: blur(8px);
+  /* One full-viewport console: header, feed rail, stage, planet rail, dock. */
+  #app {
+    position: relative; z-index: 1;
+    height: 100vh; display: grid;
+    grid-template-columns: clamp(320px, 28vw, 400px) minmax(0, 1fr) 300px;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "bar bar bar"
+      "feed stage roster"
+      "out stage roster"
+      "dock dock dock";
+    /* The empty stage is the canvas's mouse target; only the chrome takes clicks. */
+    pointer-events: none;
   }
+  #bar, #log, #roster, #output, #cmdbar, #sheet, #panel, #approval { pointer-events: auto; }
+  #stage { grid-area: stage; position: relative; min-width: 0; min-height: 0; }
+
+  /* Header: the single bar; absorbs the old product bar. */
+  #bar {
+    grid-area: bar; min-width: 0; min-height: 56px;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 16px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  #bar .wordmark {
+    flex: none; font-weight: 700; font-size: 14px; letter-spacing: 0.24em;
+    text-transform: uppercase; color: var(--fg); white-space: nowrap;
+  }
+  #bar .caption {
+    flex: none; padding-left: 12px; border-left: 1px solid var(--border);
+    font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  #bar .replay-bar { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #replay-controls { display: flex; align-items: center; gap: 6px; }
+  #replay-controls button {
+    height: 28px; padding: 0 10px; font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  #replay-pause { min-width: 66px; }
+  #replay-pause[aria-pressed="true"] { border-color: rgba(233, 180, 92, 0.55); color: var(--accent); }
+  select#replay {
+    height: 32px; max-width: 250px; min-width: 0; border-radius: var(--radius);
+    border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+    font-size: 12px; padding: 0 8px;
+  }
+
+  /* Bottom command dock: presets, task input, Run. */
   #cmdbar {
-    position: fixed; left: 50%; bottom: var(--space-2); transform: translateX(-50%); z-index: 24;
-    width: min(760px, calc(100vw - 32px));
-    display: grid; grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "presets count" "task run";
-    gap: var(--space-1) 10px; align-items: center;
-    padding: 12px 14px; border-radius: 14px;
-    background: var(--surface); border: 1px solid var(--border);
-    backdrop-filter: blur(10px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    grid-area: dock;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "presets task count run";
+    align-items: center; gap: 16px; padding: 12px 16px;
+    background: var(--surface); border-top: 1px solid var(--border);
   }
-  #presets { grid-area: presets; display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+  #presets { grid-area: presets; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   #presets .chip {
-    height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px;
-    font-weight: 500; color: var(--muted); background: rgba(22, 27, 52, 0.6);
+    flex: none; height: 28px; padding: 0 10px; border-radius: var(--radius); font-size: 12px;
+    font-weight: 500; color: var(--muted); background: transparent; white-space: nowrap;
   }
   #plan-count {
     grid-area: count; justify-self: end; font-family: var(--font-mono);
     font-size: 11.5px; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap;
   }
   #task {
-    grid-area: task; width: 100%; height: 40px; border-radius: 10px;
-    border: 1px solid var(--border); background: rgba(8, 10, 24, 0.85);
+    grid-area: task; width: 100%; height: 38px; border-radius: var(--radius);
+    border: 1px solid var(--border); background: var(--bg);
     color: var(--fg); padding: 0 12px; font-size: 14px;
   }
-  #task:focus { border-color: rgba(255, 211, 107, 0.55); box-shadow: 0 0 0 3px rgba(255, 211, 107, 0.1); }
-  /* The UA default (#757575) is 4.27:1 on this field; --muted clears AA. */
+  #task:focus { border-color: rgba(233, 180, 92, 0.55); }
   #task::placeholder { color: var(--muted); }
   button {
-    height: 34px; border-radius: 8px; border: 1px solid var(--border);
-    background: rgba(22, 27, 52, 0.9); color: var(--fg); font-size: 12px;
-    font-weight: 600; letter-spacing: 0.04em; padding: 0 14px; cursor: pointer;
+    height: 32px; border-radius: var(--radius); border: 1px solid var(--border);
+    background: transparent; color: var(--fg); font-size: 12px;
+    font-weight: 600; letter-spacing: 0.04em; padding: 0 12px; cursor: pointer;
     transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
   }
-  button:hover { border-color: rgba(255, 211, 107, 0.5); background: rgba(35, 41, 76, 0.95); }
+  button:hover { border-color: rgba(233, 180, 92, 0.5); background: rgba(236, 231, 220, 0.04); }
   button:active { transform: translateY(1px); }
-  /* Glass CTA: gold text and border, never a solid gold fill. */
+  /* The Run action is the only solid accent surface on the page. */
   #run {
-    grid-area: run; height: 40px; padding: 0 22px; font-size: 13px;
-    background: rgba(255, 211, 107, 0.1); color: var(--accent);
-    border-color: rgba(255, 211, 107, 0.55);
+    grid-area: run; height: 38px; padding: 0 22px; font-size: 13px;
+    background: var(--accent); border-color: var(--accent); color: #17130c;
+    font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
   }
-  #run:hover { background: rgba(255, 211, 107, 0.18); border-color: var(--accent); }
-  select#replay {
-    height: 34px; max-width: 250px; min-width: 0; border-radius: 8px; border: 1px solid var(--border);
-    background: rgba(8, 10, 24, 0.85); color: var(--fg); font-size: 12px; padding: 0 8px;
-  }
-  .replay-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  #replay-controls { display: flex; align-items: center; gap: 6px; }
-  #replay-controls button {
-    height: 28px; padding: 0 10px; font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-  #replay-pause { min-width: 66px; }
-  #replay-pause[aria-pressed="true"] { border-color: rgba(255, 211, 107, 0.55); color: var(--accent); }
+  #run:hover { background: #f0c271; border-color: #f0c271; }
   .pill {
-    height: 26px; display: inline-flex; align-items: center; padding: 0 12px;
-    border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.14em;
-    border: 1px solid var(--border); background: rgba(8, 10, 24, 0.8);
+    flex: none; height: 26px; display: inline-flex; align-items: center; padding: 0 10px;
+    border-radius: var(--radius); font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+    border: 1px solid var(--border); background: var(--bg);
     color: var(--muted); white-space: nowrap;
   }
-  .pill.planning { color: #93c5fd; border-color: rgba(96,165,250,.5); }
-  .pill.working { color: var(--accent); border-color: rgba(255,211,107,.55); box-shadow: 0 0 16px rgba(255,211,107,.16); }
-  .pill.complete { color: var(--ok); border-color: rgba(74,222,128,.5); }
-  .pill.failed { color: var(--bad); border-color: rgba(248,113,113,.55); }
-  .pill.awaiting { color: var(--accent); border-color: rgba(255,211,107,.6); }
+  .pill.planning { color: var(--info); border-color: rgba(143, 179, 217, 0.45); }
+  .pill.working { color: var(--accent); border-color: rgba(233, 180, 92, 0.5); }
+  .pill.complete { color: var(--success); border-color: rgba(140, 199, 157, 0.45); }
+  .pill.failed { color: var(--error); border-color: rgba(226, 131, 114, 0.5); }
+  .pill.awaiting { color: var(--warning); border-color: rgba(224, 163, 92, 0.55); }
+  .pill.warn { color: var(--warning); border-color: rgba(224, 163, 92, 0.45); }
 
-  /* Activity feed: docked bottom-left, newest line at the bottom.
-     The width clears the centred command bar, so no overlay sits on it.
-     Below ~1270px the bar crowds it out; the mobile sheet (#20) owns that. */
+  /* Activity feed: left rail, newest line at the bottom. */
   #log {
-    position: fixed; left: var(--space-2); bottom: var(--space-2); z-index: 18;
-    width: min(340px, calc(50vw - 396px)); max-height: 190px;
-    display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 6px 10px;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    grid-area: feed; display: flex; flex-direction: column; min-height: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
     font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
-    backdrop-filter: blur(8px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
   }
-  #log-lines { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; min-height: 0; }
+  #log .head {
+    flex: none; display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    color: var(--muted); letter-spacing: 0.18em; font-size: 10px; text-transform: uppercase;
+  }
+  #log .head button { height: 22px; padding: 0 8px; font-size: 12px; }
+  #log-lines {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; padding: 6px 0;
+  }
   #log .line {
-    display: flex; align-items: baseline; gap: 6px;
-    padding-left: 6px; border-left: 2px solid transparent; border-radius: 3px;
+    display: flex; align-items: baseline; gap: 6px; padding: 3px 12px;
     color: var(--muted); white-space: nowrap;
   }
   #log .line time { flex: none; font-variant-numeric: tabular-nums; }
   #log .line .dot {
-    flex: none; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--dot); box-shadow: 0 0 8px var(--dot);
+    flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dot);
   }
   /* Only the name carries the agent accent; the tail stays muted for contrast. */
   #log .line .who { flex: none; font-weight: 600; color: var(--dot); }
   #log .line .what { overflow: hidden; text-overflow: ellipsis; }
-  #log .line.failed { border-left-color: var(--bad); background: rgba(248, 113, 113, 0.1); }
-  #log .line.failed .what { color: #ffc9c9; }
-  #log .line.done { border-left-color: var(--ok); background: rgba(74, 222, 128, 0.07); }
-  #log .line.done .what { color: #c6f6d5; }
-  #log .head {
-    display: flex; justify-content: space-between; align-items: center;
-    color: #c7d2fe; letter-spacing: .12em; font-size: 10px; text-transform: uppercase;
+  /* Status is carried by the dot, tint and text colour, never a side stripe. */
+  #log .line.failed { background: rgba(226, 131, 114, 0.1); }
+  #log .line.failed .dot { background: var(--error); }
+  #log .line.failed .what { color: #f0c4b9; }
+  #log .line.done { background: rgba(140, 199, 157, 0.07); }
+  #log .line.done .dot { background: var(--success); }
+  #log .line.done .what { color: #cfe3d5; }
+  /* Idle copy: a pseudo-element, so the append-only child counter stays exact. */
+  #log-lines:empty::before {
+    content: "No events yet — lines appear here when a run starts.";
+    display: block; padding: 6px 12px; color: var(--muted); white-space: normal;
   }
-  #log .head button { height: 22px; padding: 0 8px; font-size: 12px; }
 
-  /* Blocking gate: full-page scrim above every panel and sheet. */
+  /* Blocking gate: centred scrim above every panel and sheet. */
   #approval {
-    position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center;
-    padding: 16px 16px 26px; background: rgba(3, 4, 10, 0.66); backdrop-filter: blur(4px);
+    position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(8, 7, 6, 0.72);
   }
   #approval .card {
-    width: min(520px, 92vw); background: var(--surface); border: 1px solid rgba(255,211,107,.5);
-    border-radius: 12px; padding: 14px; box-shadow: 0 0 40px rgba(255, 190, 60, 0.15);
-    backdrop-filter: blur(10px);
+    width: min(520px, 92vw); background: var(--surface);
+    border: 1px solid rgba(236, 231, 220, 0.24);
+    border-radius: var(--radius); padding: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
   }
-  #approval .label { color: var(--accent); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
-  #approval-preview { font-size: 12px; line-height: 1.5; color: #dfe5ff; white-space: pre-wrap; max-height: 84px; overflow: auto; }
-  #approval .row { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
-  #approve { background: rgba(74, 222, 128, .16); border-color: rgba(74,222,128,.5); color: #b9f6cf; }
-  #reject { background: rgba(248, 113, 113, .12); border-color: rgba(248,113,113,.45); color: #ffc9c9; }
+  #approval .label {
+    color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.16em;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  #approval-preview {
+    font-size: 13px; line-height: 1.55; color: var(--fg);
+    white-space: pre-wrap; max-height: 84px; overflow: auto;
+  }
+  #approval .row { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+  /* Approve is the solid positive action; Reject stays quiet. */
+  #approve { background: var(--success); border-color: var(--success); color: #0c0b09; }
+  #approve:hover { background: #a3d6b2; border-color: #a3d6b2; }
+  #reject { background: transparent; border-color: rgba(226, 131, 114, 0.5); color: var(--error); }
+  #reject:hover { background: rgba(226, 131, 114, 0.08); border-color: var(--error); }
   /* Replayed gate is a read-only notice: no scrim, no modal, no decisions. */
   #approval.replay {
-    inset: calc(var(--nav-h) + 16px) 0 auto 0; padding: 0 16px;
-    background: none; backdrop-filter: none; pointer-events: none;
+    inset: calc(var(--header-h) + 12px) 0 auto 0; padding: 0 16px;
+    align-items: flex-start; background: none; pointer-events: none;
   }
-  #approval.replay .card { pointer-events: auto; margin: 0 auto; border-color: var(--border); }
+  #approval.replay .card { pointer-events: auto; margin: 0 auto; }
+  /* A stored decision is a notice, not an action: it recedes. */
+  #approval.replay .label { color: var(--muted); }
   #approval.replay .row { display: none; }
 
   #tooltip {
-    position: fixed; z-index: 30; pointer-events: none; max-width: 320px;
-    padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45;
-    color: #e8ecff; background: rgba(8, 10, 24, 0.86); border: 1px solid var(--border);
-    backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    position: fixed; z-index: 35; pointer-events: none; max-width: 320px;
+    padding: 8px 10px; border-radius: var(--radius); font-size: 12px; line-height: 1.45;
+    color: var(--fg); background: var(--surface); border: 1px solid var(--border);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   }
   #tooltip .tip-head { display: flex; align-items: baseline; gap: 8px; }
   #tooltip .tip-name { font-size: 12.5px; font-weight: 600; }
@@ -192,61 +230,57 @@
     font-size: 11.5px; color: var(--muted);
   }
   #panel {
-    /* Drawer: left of the roster column, above the command bar, and never
-       over the approval gate (see the sibling rule below). */
-    position: fixed; top: calc(var(--nav-h) + 74px); right: calc(300px + 32px); bottom: 136px;
-    z-index: 30; width: min(430px, 42vw);
+    /* Drawer: a fixed overlay on the right rail; the result stays left. */
+    position: fixed; top: var(--header-h); right: 0; bottom: var(--dock-h);
+    z-index: 30; width: 300px;
     display: flex; flex-direction: column;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
+    background: var(--surface); border-left: 1px solid var(--border);
   }
-  /* The gate is a fixed-height card at the bottom; lift the drawer clear of it. */
-  #approval:not(.hidden) ~ #panel { bottom: 224px; }
   #panel header {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 12px; border-bottom: 1px solid var(--border);
-    font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #c7d2fe;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted);
   }
   #panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #panel header button { height: 22px; width: 22px; padding: 0; font-size: 13px; line-height: 1; }
   #panel .chip {
-    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
+    padding: 1px 8px; border-radius: var(--radius); border: 1px solid var(--border);
     font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
     color: var(--muted); white-space: nowrap;
   }
-  #panel .chip.called { color: #93c5fd; border-color: rgba(96, 165, 250, 0.5); }
-  #panel .chip.working { color: var(--accent); border-color: rgba(255, 211, 107, 0.55); }
-  #panel .chip.done { color: var(--success); border-color: rgba(74, 222, 128, 0.5); }
+  #panel .chip.called { color: var(--info); border-color: rgba(143, 179, 217, 0.45); }
+  #panel .chip.working { color: var(--accent); border-color: rgba(233, 180, 92, 0.5); }
+  #panel .chip.done { color: var(--success); border-color: rgba(140, 199, 157, 0.45); }
   #panel .chip.failed {
-    color: var(--error); border-color: rgba(248, 113, 113, 0.55);
-    background: rgba(248, 113, 113, 0.12);
+    color: var(--error); border-color: rgba(226, 131, 114, 0.5);
+    background: rgba(226, 131, 114, 0.1);
   }
-  #panel-body { padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; color: #cfd8ff; }
+  #panel-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; color: var(--fg); }
   #panel .fields { margin: 0 0 12px; display: grid; gap: 8px; }
   #panel .fields div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; }
   #panel dt {
-    font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
     color: var(--muted); padding-top: 2px;
   }
-  #panel dd { margin: 0; color: #e6ebff; white-space: pre-wrap; word-break: break-word; }
+  #panel dd { margin: 0; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
   #panel .out-label {
     display: block; margin-bottom: 6px; font-family: var(--font-mono); font-size: 10px;
-    letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
   }
   #panel pre {
     margin: 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
-    color: #cfd8ff; white-space: pre-wrap; word-break: break-word;
+    color: var(--fg); white-space: pre-wrap; word-break: break-word;
   }
 
-  /* Agent roster: flat list in the shared glass surface, no nested cards */
+  /* Planet roster: one flat list in the right rail, no nested cards. */
   #roster {
-    position: fixed; right: 16px; top: calc(var(--nav-h) + 74px); bottom: 132px;
-    width: 300px; z-index: 21; display: flex; flex-direction: column;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0, 0, 0, 0.45);
+    grid-area: roster; display: flex; flex-direction: column; min-height: 0;
+    width: 300px; justify-self: end;
+    background: var(--surface); border-left: 1px solid var(--border);
   }
   #roster .rh {
-    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    flex: none; display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
     padding: 10px 12px; border-bottom: 1px solid var(--border);
     font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
     color: var(--accent);
@@ -255,48 +289,52 @@
     font-family: var(--font-mono); font-size: 11.5px; font-weight: 400;
     letter-spacing: 0.04em; text-transform: none; color: var(--muted);
   }
-  #roster-rows { overflow: auto; flex: 1; }
+  #roster-rows { overflow: auto; flex: 1; min-height: 0; }
   #roster .empty { margin: 0; padding: 12px; font-size: 12px; line-height: 1.55; color: var(--muted); }
   #roster .row {
-    display: grid; grid-template-columns: 9px 1fr; gap: 10px; padding: 9px 12px;
-    border-top: 1px solid rgba(142, 158, 220, 0.12); cursor: pointer;
+    display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 10px 12px;
+    border-top: 1px solid var(--border); cursor: pointer;
   }
   #roster .row:first-child { border-top: 0; }
-  #roster .row:hover { background: rgba(35, 41, 76, 0.45); }
+  #roster .row:hover { background: rgba(236, 231, 220, 0.04); }
   #roster .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  #roster .dot {
-    width: 9px; height: 9px; margin-top: 5px; border-radius: 50%;
-    background: var(--dot); box-shadow: 0 0 10px var(--dot);
+  #roster .step {
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; line-height: 1.35;
+    color: var(--row-accent, var(--accent));
   }
-  #roster .nm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  #roster .agent { font-size: 13px; font-weight: 600; }
+  #roster .nm { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  #roster .agent {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px; font-weight: 600;
+  }
   #roster .role {
     margin-top: 1px; font-size: 12px; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #roster .chip {
-    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
+    padding: 1px 8px; border-radius: var(--radius); border: 1px solid var(--border);
     font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
     color: var(--muted); white-space: nowrap;
   }
-  #roster .chip.called { color: #93c5fd; border-color: rgba(96, 165, 250, 0.5); }
-  #roster .chip.working { color: var(--accent); border-color: rgba(255, 211, 107, 0.55); }
-  #roster .chip.done { color: var(--success); border-color: rgba(74, 222, 128, 0.5); }
+  #roster .chip.called { color: var(--info); border-color: rgba(143, 179, 217, 0.45); }
+  #roster .chip.working { color: var(--accent); border-color: rgba(233, 180, 92, 0.5); }
+  #roster .chip.done { color: var(--success); border-color: rgba(140, 199, 157, 0.45); }
   #roster .chip.failed {
-    color: var(--error); border-color: rgba(248, 113, 113, 0.55);
-    background: rgba(248, 113, 113, 0.12);
+    color: var(--error); border-color: rgba(226, 131, 114, 0.5);
+    background: rgba(226, 131, 114, 0.1);
   }
   #roster .bar {
-    margin-top: 7px; height: 3px; border-radius: 2px;
-    background: rgba(142, 158, 220, 0.16); overflow: hidden;
+    margin-top: 7px; height: 3px; border-radius: var(--radius);
+    background: rgba(236, 231, 220, 0.1); overflow: hidden;
   }
   #roster .bar i {
-    display: block; height: 100%; width: 0; border-radius: 2px; background: var(--dot);
+    display: block; height: 100%; width: 0; border-radius: var(--radius);
+    background: var(--row-accent, var(--accent));
     transition: width var(--dur-slow) var(--ease);
   }
   #roster .row.failed .bar i { background: var(--error); }
   #roster .row.working .bar i {
-    background: linear-gradient(90deg, transparent, var(--dot), transparent);
+    background: linear-gradient(90deg, transparent, var(--row-accent, var(--accent)), transparent);
     background-size: 200% 100%; animation: roster-shimmer 1.2s linear infinite;
   }
   @keyframes roster-shimmer {
@@ -308,150 +346,73 @@
     #roster .row.working .bar i { animation: none; }
   }
   #output {
-    /* Docked above the command bar and left of the roster, so no HUD panel
-       covers another. The drawer and the result are mutually exclusive. */
-    position: fixed; right: calc(300px + 32px); bottom: 132px; z-index: 26; width: min(460px, 44vw);
-    max-height: min(56vh, 520px); display: flex; flex-direction: column;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    backdrop-filter: blur(10px); box-shadow: 0 12px 50px rgba(0,0,0,.55);
+    /* Result: the left rail's lower row, so the stage is never covered. */
+    grid-area: out; display: flex; flex-direction: column; min-height: 0;
+    max-height: min(46vh, 520px);
+    background: var(--surface);
+    border-right: 1px solid var(--border); border-top: 1px solid var(--border);
     animation: card-in var(--dur-slow) var(--ease);
   }
   @keyframes card-in {
-    from { opacity: 0; transform: translateY(14px); }
+    from { opacity: 0; transform: translateY(8px); }
   }
-  #output .actions { display: flex; justify-content: flex-end; padding: 0 12px 12px; }
-  #output .actions button {
-    height: 30px; background: rgba(255, 211, 107, 0.1);
-    color: var(--accent); border-color: rgba(255, 211, 107, 0.55);
-  }
-  #output .actions button:hover { background: rgba(255, 211, 107, 0.18); border-color: var(--accent); }
   @media (prefers-reduced-motion: reduce) {
     #output { animation: none; }
   }
   #output header {
-    display: flex; justify-content: space-between; align-items: center;
+    flex: none; display: flex; justify-content: space-between; align-items: center;
     padding: 10px 12px; border-bottom: 1px solid var(--border);
-    font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+    font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted);
   }
   #output header button { height: 22px; width: 22px; padding: 0; font-size: 13px; line-height: 1; }
   #output-meta {
-    padding: 7px 12px 0; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--muted); font-family: var(--font-mono);
+    flex: none; padding: 7px 12px 0; font-size: 11.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); font-family: var(--font-mono);
   }
   #output-body {
-    padding: 10px 12px 14px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-    font-size: 12.5px; line-height: 1.6; color: #e6ebff;
+    flex: 1 1 auto; padding: 10px 12px 14px; overflow: auto; min-height: 0;
+    overscroll-behavior: contain;
+    white-space: pre-wrap; word-break: break-word;
+    font-size: 14px; line-height: 1.6; color: var(--fg);
   }
+  #output-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The panel takes focus on open; an outline here reads as a selection. */
+  #output:focus-visible { outline: none; }
+  #output .actions { flex: none; display: flex; justify-content: flex-end; padding: 0 12px 12px; }
+  #output .actions button { height: 30px; color: var(--accent); }
   #pill { cursor: pointer; }
 
-  /* Page chrome: nav, hero, how-it-works, footer */
-  #nav {
-    position: fixed; top: 0; left: 0; right: 0; height: var(--nav-h); z-index: 22;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 var(--space-3);
-    background: rgba(5, 6, 13, 0.86); border-bottom: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-  }
-  #nav .wordmark {
-    font-weight: 700; font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase;
-    color: var(--accent); text-shadow: 0 0 18px rgba(255, 196, 74, 0.35);
-  }
-  #nav .nav-links { display: flex; gap: var(--space-1); }
-  #nav a {
-    font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
-    text-decoration: none; color: var(--muted); padding: var(--space-1) 12px; border-radius: 8px;
-  }
-  #nav a:hover { color: var(--fg); background: rgba(35, 41, 76, 0.7); }
-
-  main { position: relative; z-index: 1; pointer-events: none; }
-  #how, .foot { pointer-events: auto; }
-  #demo {
-    position: relative; min-height: 100vh;
-    display: flex; justify-content: center; align-items: flex-start;
-    padding-top: clamp(96px, 22vh, 200px);
-    scroll-margin-top: var(--nav-h);
-    /* The stage is the canvas underneath; nothing here is clickable. */
-    pointer-events: none;
-  }
-  .hero {
-    max-width: 640px; padding: 0 var(--space-3); text-align: center; pointer-events: none;
-    transition: opacity var(--dur-slow) var(--ease), visibility 0s linear;
-  }
-  .hero.is-gone {
-    opacity: 0; visibility: hidden;
-    transition: opacity var(--dur-slow) var(--ease), visibility 0s linear var(--dur-slow);
-  }
-  .hero h1 {
-    margin: 0 0 var(--space-2);
-    font-size: clamp(28px, 3.4vw, 44px); font-weight: 600; line-height: 1.1; letter-spacing: -0.02em;
-  }
-  .hero p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--muted); }
-
-  #how {
-    scroll-margin-top: var(--nav-h);
-    padding: var(--space-6) var(--space-3);
-    background: rgba(5, 6, 13, 0.9); border-top: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-  }
-  #how .eyebrow, .step-no {
-    font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
-    color: var(--accent);
-  }
-  #how .eyebrow { display: block; max-width: 1000px; margin: 0 auto var(--space-3); }
-  #how ol {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3);
-    max-width: 1000px; margin: 0 auto; padding: 0; list-style: none;
-  }
-  #how li { padding-top: var(--space-2); border-top: 1px solid var(--border); }
-  #how h3 { margin: var(--space-1) 0; font-size: 16px; font-weight: 600; }
-  #how li p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
-
-  .foot {
-    padding: var(--space-3); border-top: 1px solid var(--border);
-    background: rgba(5, 6, 13, 0.9); text-align: center;
-  }
-  .foot p { margin: 0; font-size: 12px; color: var(--muted); }
-
-  @media (max-width: 640px) {
-    #how ol { grid-template-columns: 1fr; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    html { scroll-behavior: auto; }
-    .hero, .hero.is-gone { transition: none; }
-  }
-
-  /* The roster and feed live in one bottom sheet on small screens; on every
-     other width the wrapper disappears and they dock as before. */
+  /* The roster and feed share one bottom sheet below 1180px; wider, the
+     wrapper is transparent to the grid and they dock in their rails. */
   #sheet, #sheet-body { display: contents; }
   #sheet .sheet-head { display: none; }
 
-  /* Compact dock: the command bar spans nearly the whole width, so the feed
-     lifts above it and the drawer/result share the space above the feed. */
-  @media (min-width: 768px) and (max-width: 1279.98px) {
-    #log { bottom: 132px; width: min(300px, calc(50vw - 16px)); }
-    #panel { bottom: 336px; }
-    #approval:not(.hidden) ~ #panel { bottom: 336px; }
-    #output {
-      bottom: 336px; width: min(460px, calc(100vw - 348px));
-      max-height: calc(100vh - 466px);
+  @media (max-width: 1179.98px) {
+    /* The header wraps to two rows here; --header-h is measured from it. */
+    #app {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-areas: "bar" "stage" "dock";
     }
-  }
 
-  @media (max-width: 767.98px) {
-    #topbar { height: auto; flex-wrap: wrap; padding: 6px 8px; gap: 6px; }
-    .replay-bar { flex: 1 1 100%; }
+    #bar { flex-wrap: wrap; padding: 8px 12px; gap: 8px; }
+    #bar .caption { display: none; }
+    #bar .replay-bar { flex: 1 1 100%; }
     select#replay { flex: 1 1 auto; max-width: none; min-width: 0; }
+
     #cmdbar {
-      width: calc(100vw - 16px); bottom: 8px;
-      padding: 10px 12px; gap: 6px 8px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "presets count" "task run";
+      gap: 8px; padding: 10px 12px;
     }
 
     #sheet {
       position: fixed; left: 8px; right: 8px; z-index: 28;
-      bottom: calc(16px + var(--cmdbar-h));
+      bottom: calc(8px + var(--dock-h));
       display: flex; flex-direction: column; max-height: 50vh;
-      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-      backdrop-filter: blur(10px); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius);
     }
     #sheet .sheet-head { display: flex; align-items: center; gap: 6px; padding: 8px; }
     #sheet.open .sheet-head { border-bottom: 1px solid var(--border); }
@@ -459,32 +420,39 @@
     #sheet .sheet-tabs { display: none; }
     #sheet.open .sheet-tabs { display: flex; gap: 6px; }
     #sheet .sheet-tabs button { height: 30px; padding: 0 12px; }
-    #sheet .sheet-tabs button[aria-pressed="true"] {
-      border-color: rgba(255, 211, 107, 0.55); color: var(--accent);
-    }
+    #sheet .sheet-tabs button[aria-pressed="true"] { border-color: rgba(233, 180, 92, 0.55); color: var(--accent); }
     #sheet:not(.open) #sheet-body { display: none; }
     #sheet-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
     #sheet[data-tab="roster"] #log,
     #sheet[data-tab="feed"] #roster { display: none; }
 
-    /* Dock the panels into the sheet instead of the viewport. */
+    /* Dock the rails into the sheet instead of the viewport. */
     #roster, #log {
-      position: static; width: auto; max-height: none; min-height: 0; flex: 1;
-      border: 0; border-radius: 0 0 14px 14px; background: transparent;
-      box-shadow: none; backdrop-filter: none;
+      grid-area: auto; position: static; width: auto; max-height: none; min-height: 0; flex: 1;
+      border: 0; background: transparent;
     }
     #log .head { display: none; }
 
-    /* Result and drawer become full-screen sheets; the chrome gets out of the way. */
+    /* Result and drawer become full-screen sheets; the chrome steps aside. */
     #panel, #output {
-      inset: 0; width: auto; max-width: none; max-height: none; border-radius: 0;
-      padding-bottom: env(safe-area-inset-bottom, 0);
+      position: fixed; inset: 0; width: auto; max-width: none; max-height: none;
+      border: 0; padding-bottom: env(safe-area-inset-bottom, 0);
     }
-    #panel { z-index: 32; }
-    #output { z-index: 34; }
+    /* Full-screen sheet: keep content inside the notch and side insets. */
+    #panel {
+      z-index: 32; overflow-x: hidden;
+      padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+               env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+    }
+    /* The result fills the viewport down to the safe area; its body scrolls. */
+    #output {
+      z-index: 34;
+      padding-top: env(safe-area-inset-top, 0);
+      padding-right: env(safe-area-inset-right, 0);
+      padding-left: env(safe-area-inset-left, 0);
+    }
     #output-body, #panel-body { padding-bottom: 24px; }
-    body.modal-open #nav, body.modal-open #topbar,
-    body.modal-open #cmdbar, body.modal-open #sheet { display: none; }
+    body.modal-open #bar, body.modal-open #cmdbar, body.modal-open #sheet { display: none; }
 
     #approval { padding: 16px 12px calc(16px + env(safe-area-inset-bottom, 0)); }
     #approval .card { width: 100%; }
@@ -494,72 +462,35 @@
 </style>
 </head>
 <body>
-<canvas id="sky" tabindex="-1"></canvas>
+<canvas id="sky" aria-hidden="true" tabindex="-1"></canvas>
 
-<nav id="nav" aria-label="Page">
-  <span class="wordmark">Sol-O</span>
-  <div class="nav-links">
-    <a href="#demo">Demo</a>
-    <a href="#how">How it works</a>
-  </div>
-</nav>
-
-<main>
-  <section id="demo" aria-label="Live stage">
-    <header id="hero" class="hero">
-      <h1>Watch a task become a solar system.</h1>
-      <p>Give the Sun a goal; nothing is sent until you approve.</p>
-    </header>
-  </section>
-
-  <section id="how" aria-labelledby="how-title">
-    <h2 id="how-title" class="eyebrow">How it works</h2>
-    <ol>
-      <li>
-        <span class="step-no">01</span>
-        <h3>Describe the goal</h3>
-        <p>Type a task into the bar; the Sun decides which agents to call.</p>
-      </li>
-      <li>
-        <span class="step-no">02</span>
-        <h3>Watch the planets</h3>
-        <p>Each agent appears as it is called, works, and reports back in the feed.</p>
-      </li>
-      <li>
-        <span class="step-no">03</span>
-        <h3>Approve the result</h3>
-        <p>The run aligns into a draft; nothing leaves until you approve it.</p>
-      </li>
-    </ol>
-  </section>
-
-  <footer class="foot">
-    <p>Sol-O · real orchestration, drawn as a solar system.</p>
-  </footer>
-</main>
-
-<div id="topbar">
-  <button type="button" id="pill" class="pill">IDLE</button>
-  <div class="replay-bar">
-    <div id="replay-controls" class="hidden" role="group" aria-label="Replay controls">
-      <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
-      <button id="replay-speed" type="button" aria-pressed="false" aria-label="Replay speed">1x</button>
+<div id="app">
+  <header id="bar">
+    <span class="wordmark">Sol-O</span>
+    <span class="caption">Solar orchestrator</span>
+    <button type="button" id="pill" class="pill"><span id="pill-text" role="status">IDLE</span></button>
+    <div class="replay-bar">
+      <div id="replay-controls" class="hidden" role="group" aria-label="Replay controls">
+        <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
+        <button id="replay-speed" type="button" aria-pressed="false" aria-label="Replay speed">1x</button>
+      </div>
+      <select id="replay" aria-label="Replay a stored run"><option value="">Replay a run…</option></select>
     </div>
-    <select id="replay" aria-label="Replay a stored run"><option value="">Replay a run…</option></select>
-  </div>
-</div>
+  </header>
 
-<div id="cmdbar" role="search" aria-label="Start a run">
-  <input id="task" autocomplete="off" spellcheck="false" aria-label="Task"
-         placeholder="Give the Sun a task…">
-  <div id="presets" role="group" aria-label="Scenario presets">
-    <button type="button" class="chip" data-task="Plan a three-day trip to Lisbon and write the itinerary.">Plan a trip</button>
-    <button type="button" class="chip" data-task="Review this function for bugs and summarise the issues.">Review code</button>
-    <button type="button" class="chip" data-task="Write a short report on what the team shipped this week.">Write a report</button>
+  <div id="stage" aria-hidden="true"></div>
+
+  <div id="cmdbar" role="search" aria-label="Start a run">
+    <input id="task" autocomplete="off" spellcheck="false" aria-label="Task"
+           placeholder="Give the Sun a task…">
+    <div id="presets" role="group" aria-label="Scenario presets">
+      <button type="button" class="chip" data-task="Plan a three-day trip to Lisbon and write the itinerary.">Plan a trip</button>
+      <button type="button" class="chip" data-task="Review this function for bugs and summarise the issues.">Review code</button>
+      <button type="button" class="chip" data-task="Write a short report on what the team shipped this week.">Write a report</button>
+    </div>
+    <button id="run">Run</button>
+    <span id="plan-count" class="hidden" aria-live="polite"></span>
   </div>
-  <button id="run">Run</button>
-  <span id="plan-count" class="hidden" aria-live="polite"></span>
-</div>
 
 <div id="approval" class="hidden" role="dialog" aria-modal="true" aria-label="Approval required">
   <div class="card">
@@ -600,10 +531,10 @@
     </div>
   </div>
   <div id="sheet-body">
-    <aside id="roster" aria-label="Agent roster">
-      <div class="rh"><span>Agents</span><span id="roster-count" class="count"></span></div>
+    <aside id="roster" aria-label="Planet roster">
+      <div class="rh"><span>Planets</span><span id="roster-count" class="count"></span></div>
       <div id="roster-rows">
-        <p class="empty">No run yet — planned agents appear here.</p>
+        <p class="empty">No run yet — the Sun's plan appears here.</p>
       </div>
     </aside>
 
@@ -623,6 +554,7 @@
   <div id="output-body"></div>
   <div class="actions"><button id="output-replay">Replay</button></div>
 </div>
+</div>
 
 <script>
 "use strict";
@@ -636,20 +568,36 @@ const ctx = canvas.getContext("2d");
 const TAU = Math.PI * 2;
 let W = window.innerWidth;
 let H = window.innerHeight;
+let stageRect = { left: 0, top: 0, width: W, height: H };
 let CX = W / 2;
-let CY = H * 0.52;
+let CY = H / 2;
+
+/* The Sun centres in the stage box between the rails, not in the viewport. */
+function syncStage() {
+  const box = document.getElementById("stage").getBoundingClientRect();
+  stageRect = { left: box.left, top: box.top, width: box.width, height: box.height };
+  CX = box.left + box.width / 2;
+  CY = box.top + box.height / 2;
+}
+
+function syncHeaderHeight() {
+  // The header wraps below 1180px; surfaces offset from its measured height.
+  // A full-screen result or drawer hides the header, so keep the last value.
+  const height = bar.offsetHeight;
+  if (height) document.documentElement.style.setProperty("--header-h", `${height}px`);
+  syncStage();
+}
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth;
   H = window.innerHeight;
-  CX = W / 2;
-  CY = H * 0.52;
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   canvas.style.width = W + "px";
   canvas.style.height = H + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  syncHeaderHeight();
   makeBackground();
   makeStars();
 }
@@ -662,17 +610,17 @@ let nebulaB = null;
 
 function makeBackground() {
   bgGrad = ctx.createLinearGradient(0, 0, W, H);
-  bgGrad.addColorStop(0, "#050816");
-  bgGrad.addColorStop(0.55, "#070b1f");
-  bgGrad.addColorStop(1, "#0b102b");
+  bgGrad.addColorStop(0, "#0c0b09");
+  bgGrad.addColorStop(0.55, "#0a0907");
+  bgGrad.addColorStop(1, "#080706");
 
   nebulaA = ctx.createRadialGradient(W * 0.22, H * 0.2, 0, W * 0.22, H * 0.2, Math.max(W, H) * 0.5);
-  nebulaA.addColorStop(0, "rgba(96, 68, 190, 0.16)");
-  nebulaA.addColorStop(0.5, "rgba(52, 40, 120, 0.06)");
+  nebulaA.addColorStop(0, "rgba(120, 88, 40, 0.14)");
+  nebulaA.addColorStop(0.5, "rgba(80, 60, 30, 0.05)");
   nebulaA.addColorStop(1, "rgba(0, 0, 0, 0)");
 
   nebulaB = ctx.createRadialGradient(W * 0.82, H * 0.75, 0, W * 0.82, H * 0.75, Math.max(W, H) * 0.42);
-  nebulaB.addColorStop(0, "rgba(30, 90, 160, 0.11)");
+  nebulaB.addColorStop(0, "rgba(110, 52, 30, 0.1)");
   nebulaB.addColorStop(1, "rgba(0, 0, 0, 0)");
 }
 
@@ -845,7 +793,6 @@ const state = {
   lastStopReason: "",
   lastFailure: null,
   lastResultStatus: null,
-  lastRunStatus: null,
 };
 
 let stars = [];
@@ -874,12 +821,14 @@ function makeStars() {
 /* DOM references                                                      */
 /* ------------------------------------------------------------------ */
 
+const bar = document.getElementById("bar");
 const taskInput = document.getElementById("task");
 const cmdbar = document.getElementById("cmdbar");
 const runButton = document.getElementById("run");
 const presets = document.getElementById("presets");
 const planCount = document.getElementById("plan-count");
 const pill = document.getElementById("pill");
+const pillText = document.getElementById("pill-text");
 const replaySelect = document.getElementById("replay");
 const replayControls = document.getElementById("replay-controls");
 const replayPause = document.getElementById("replay-pause");
@@ -912,14 +861,6 @@ const sheet = document.getElementById("sheet");
 const sheetToggle = document.getElementById("sheet-toggle");
 const tabRoster = document.getElementById("tab-roster");
 const tabFeed = document.getElementById("tab-feed");
-const hero = document.getElementById("hero");
-
-function hideHero() {
-  if (hero.classList.contains("is-gone")) return;
-  hero.classList.add("is-gone");
-  hero.setAttribute("inert", "");
-  hero.setAttribute("aria-hidden", "true");
-}
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -935,28 +876,48 @@ function escapeHtml(text) {
   }[ch]));
 }
 
+/* One run-state vocabulary for the pill, the Sun and the result meta. */
+const RUN_STATE_LABEL = {
+  orchestrating: "running",
+  working: "running",
+  awaiting: "waiting for approval",
+  awaiting_approval: "waiting for approval",
+};
+const RUN_STATE_TONE = {
+  planning: "planning",
+  running: "working",
+  "waiting for approval": "awaiting",
+  complete: "complete",
+  partial: "warn",
+  "needs clarification": "warn",
+  rejected: "failed",
+  failed: "failed",
+};
+
+function runStateLabel(status) {
+  const key = String(status == null ? "" : status).trim().toLowerCase()
+    .replace(/[\s_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return RUN_STATE_LABEL[key] || key.replace(/_/g, " ") || "idle";
+}
+
+/* A detail that repeats the state would read as a second state. */
+function runDetailText(label, detail) {
+  const text = String(detail || "").trim();
+  return runStateLabel(text) === label ? "" : text;
+}
+
 function setSun(status, detail) {
   // While an approval is pending, worker/tool events must not hide the gate.
   if (state.pending && (status === "orchestrating" || status === "planning")) status = "awaiting";
   state.sun = status;
   state.detail = detail || "";
-  const label = status === "awaiting" ? "waiting for approval" : status;
-  pill.textContent = (state.mode === "replay" ? "REPLAY · " : "") + label.toUpperCase();
-  pill.className = "pill " + ({
-    planning: "planning",
-    orchestrating: "working",
-    working: "working",
-    complete: "complete",
-    partial: "failed",
-    failed: "failed",
-    awaiting: "awaiting",
-    rejected: "failed",
-    idle: "",
-  }[status] || "");
+  const label = runStateLabel(status);
+  pillText.textContent = (state.mode === "replay" ? "REPLAY · " : "") + label.toUpperCase();
+  pill.className = "pill " + (RUN_STATE_TONE[label] || "");
 }
 
 function showPlanCount(count) {
-  planCount.textContent = `${count} agent${count === 1 ? "" : "s"} planned`;
+  planCount.textContent = `${count} planet${count === 1 ? "" : "s"} planned`;
   planCount.classList.remove("hidden");
 }
 
@@ -989,7 +950,7 @@ function logLineHtml(item) {
   const who = item.agent || item.name;
   const rest = item.agent ? `${item.name} · ${item.text}` : item.text;
   return `<div class="line${item.failed ? " failed" : done ? " done" : ""}"` +
-    ` style="--dot:${item.accent || "#8b95b8"}">` +
+    ` style="--dot:${item.accent || "#a39a89"}">` +
     `<time>${escapeHtml(item.time)}</time><i class="dot"></i>` +
     `<span class="who">${escapeHtml(who)}</span>` +
     `<span class="what">${escapeHtml(rest)}</span></div>`;
@@ -1083,8 +1044,26 @@ function rosterOf(records) {
     }
     const status = STATUS_BY_EVENT[name];
     if (!status || isPlannerEvent(data)) return;
-    const row = rows.get(`${data.step}:${data.agent}`) ||
-      [...rows.values()].find((item) => item.agent === data.agent);
+    let row;
+    if (data.step != null) {
+      // System (logger/notifier) and revision steps are not in plan_ready:
+      // give each its own row instead of restyling an older row by agent.
+      const key = `${data.step}:${data.agent}`;
+      row = rows.get(key);
+      if (!row) {
+        row = {
+          step: data.step,
+          agent: data.agent,
+          task: "",
+          status: "Idle",
+          accent: styleFor(data.agent).color,
+        };
+        rows.set(key, row);
+        total += 1;
+      }
+    } else {
+      row = [...rows.values()].find((item) => item.agent === data.agent);
+    }
     if (!row) return;
     if (name === "agent_done" && !counted.has(row.step)) {
       counted.add(row.step);
@@ -1092,7 +1071,7 @@ function rosterOf(records) {
     }
     if (row.status !== "Failed") row.status = status;
   });
-  return { rows: [...rows.values()], completed, total };
+  return { rows: [...rows.values()].sort((a, b) => a.step - b.step), completed, total };
 }
 
 function recordTime(record) {
@@ -1100,7 +1079,20 @@ function recordTime(record) {
   return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString([], { hour12: false }) : "";
 }
 
+/* Stored runs carry UTC stamps; the picker matches the feed's local clock. */
+function localStamp(value) {
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return String(value || "").slice(5, 16);
+  const date = new Date(stamp);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 window.SolO = {
+  summary(records) {
+    return rosterOf(records);
+  },
   roster(records) {
     return rosterOf(records).rows;
   },
@@ -1114,6 +1106,9 @@ window.SolO = {
   },
   accent(agent) {
     return styleFor(String(agent)).color;
+  },
+  runState(status) {
+    return runStateLabel(status);
   },
   replay() {
     return {
@@ -1141,23 +1136,23 @@ function renderRoster() {
   const focused = document.activeElement;
   const rowEl = focused && focused.closest ? focused.closest("#roster-rows .row[data-agent]") : null;
   const focusKey = rowEl ? { step: rowEl.dataset.step, agent: rowEl.dataset.agent } : null;
-  const rows = window.SolO.roster(state.records);
-  const { completed, total } = window.SolO.progress(state.records);
+  const { rows, completed, total } = window.SolO.summary(state.records);
   rosterCount.textContent = total ? `${completed} / ${total} steps` : "";
   if (!rows.length) {
     rosterRows.innerHTML = '<p class="empty">' + (state.records.length
-      ? "Waiting for the plan…"
-      : "No run yet — planned agents appear here.") + "</p>";
+      ? "Waiting for the Sun's plan…"
+      : "No run yet — the Sun's plan appears here.") + "</p>";
     return;
   }
   rosterRows.innerHTML = rows.map((row) => {
     const status = row.status;
     const role = AGENT_ROLE[row.agent] || row.task || "agent";
     const state_ = status.toLowerCase();
-    return `<div class="row ${state_}" style="--dot:${row.accent}" role="button" tabindex="0"` +
+    const step = String(row.step).padStart(2, "0");
+    return `<div class="row ${state_}" style="--row-accent:${row.accent}" role="button" tabindex="0"` +
       ` data-step="${row.step}" data-agent="${escapeHtml(row.agent)}"` +
-      ` aria-label="Open ${escapeHtml(row.agent)} details, ${status}">` +
-      `<span class="dot"></span><div>` +
+      ` aria-label="Open ${escapeHtml(row.agent)} step ${row.step} details, ${status}">` +
+      `<span class="step" aria-hidden="true">${step}</span><div>` +
       `<div class="nm"><span class="agent">${escapeHtml(row.agent)}</span>` +
       `<span class="chip ${state_}">${status}</span></div>` +
       `<div class="role">${escapeHtml(role.slice(0, 46))}</div>` +
@@ -1176,7 +1171,9 @@ function renderRoster() {
 /* ------------------------------------------------------------------ */
 
 function orbitRadius(index) {
-  const span = Math.min(W, H * 1.7);
+  const width = stageRect.width || W;
+  const height = stageRect.height || H;
+  const span = Math.min(width, height * 1.7);
   return Math.max(70, span * 0.14 + index * span * 0.045);
 }
 
@@ -1224,6 +1221,8 @@ function planetFor(step, agent, placeholder) {
 }
 
 function resetScene() {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
   state.plans = [];
   state.planets.clear();
   state.alignPhase = null;
@@ -1260,11 +1259,15 @@ function syncDecisionGate() {
   approvalBox.classList.toggle("replay", replay);
   if (replay) approvalBox.removeAttribute("aria-modal");
   else approvalBox.setAttribute("aria-modal", "true");
+  approvalBox.setAttribute(
+    "aria-label",
+    replay ? "Stored approval request · replay is read-only" : "Approval required",
+  );
   approvalLabel.textContent = replay
     ? "Stored pending action · replay is read-only · nothing will be sent"
     : deciding
       ? "Sending your decision…"
-      : "Approval required · nothing has been sent";
+      : "Approval required · nothing has been sent · the decision is final";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1363,11 +1366,10 @@ function applyEvent(record) {
       } else {
         setSun("rejected", data.decision);
       }
-      showResult(data.decision === "approved" ? runStatus : "rejected");
+      autoResult(data.decision === "approved" ? runStatus : "rejected");
       break;
     }
     case "all_done": {
-      state.lastRunStatus = data.status;
       state.lastSeconds = data.seconds != null ? data.seconds : null;
       if (data.status === "complete") {
         setSun("complete", `finished in ${data.seconds}s`);
@@ -1376,7 +1378,7 @@ function applyEvent(record) {
         markSkipped();
         setSun(data.status || "complete", data.status || "");
       }
-      showResult(data.status);
+      autoResult(data.status);
       refreshRuns();
       break;
     }
@@ -1404,7 +1406,7 @@ function applyEvent(record) {
       }
       state.slowUntil = performance.now() + 2500;
       setSun("failed", data.error_type || "failed");
-      showResult("failed", data);
+      autoResult("failed", data);
       refreshRuns();
       break;
     }
@@ -1484,7 +1486,6 @@ async function startRun() {
     taskInput.focus();
     return;
   }
-  hideHero();
   clearReplayTimers();
   state.mode = "live";
   state.follow = null;
@@ -1538,6 +1539,7 @@ function clearReplayTimers() {
 function setReplayControls(visible) {
   replayControls.classList.toggle("hidden", !visible);
   syncReplayControls();
+  syncHeaderHeight();
 }
 
 function syncReplayControls() {
@@ -1614,13 +1616,12 @@ async function replayRun(runId) {
   if (!runId) return;
   const token = ++replayToken;
   const stale = () => token !== replayToken || state.mode !== "replay";
-  hideHero();
   clearReplayTimers();
   state.mode = "replay";
   state.follow = runId;
   state.runId = runId;
   resetScene();
-  pill.textContent = "REPLAY · LOADING";
+  pillText.textContent = "REPLAY · LOADING";
   pill.className = "pill working";
 
   try {
@@ -1630,7 +1631,7 @@ async function replayRun(runId) {
     const records = await response.json();
     if (stale()) return;
     if (!records.length) {
-      pill.textContent = "REPLAY · EMPTY";
+      pillText.textContent = "REPLAY · EMPTY";
       return;
     }
     replayPlayer.records = records;
@@ -1638,7 +1639,7 @@ async function replayRun(runId) {
     scheduleReplayStep(0);
   } catch (error) {
     if (stale()) return;
-    pill.textContent = "REPLAY · ERROR";
+    pillText.textContent = "REPLAY · ERROR";
     pill.className = "pill failed";
     pushLog("error", { message: String(error.message || error) });
   }
@@ -1668,8 +1669,8 @@ async function refreshRuns() {
     const rows = await response.json();
     const current = replaySelect.value;
     replaySelect.innerHTML = '<option value="">Replay a run…</option>' + rows.map((row) => {
-      const when = (row.created_at || "").replace("T", " ").slice(0, 16);
-      const label = `${when} · ${row.status} · ${(row.task || "").slice(0, 42)}`;
+      const when = localStamp(row.created_at);
+      const label = `${when} · ${runStateLabel(row.status)} · ${(row.task || "").slice(0, 42)}`;
       return `<option value="${escapeHtml(row.id)}">${escapeHtml(label)}</option>`;
     }).join("");
     if (current) replaySelect.value = current;
@@ -1724,6 +1725,23 @@ function lastCheckerIssues(outputs) {
 }
 
 let outputOpener = null;
+let resultTimer = 0;
+
+function autoResult(status, data) {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
+  const compact = window.matchMedia("(max-width: 1179.98px)").matches;
+  // Below 1180px the result is full-screen: let the 5.4s alignment finish first.
+  const wait = status === "complete" && compact && !reduceMotion ? 5600 : 0;
+  if (!wait) {
+    showResult(status, data);
+    return;
+  }
+  resultTimer = setTimeout(() => {
+    resultTimer = 0;
+    showResult(status, data);
+  }, wait);
+}
 
 function closeOutput() {
   outputBox.classList.add("hidden");
@@ -1734,6 +1752,8 @@ function closeOutput() {
 }
 
 async function showResult(status, data) {
+  clearTimeout(resultTimer);
+  resultTimer = 0;
   state.lastResultStatus = status;
   closeDrawer();
   if (!outputBox.contains(document.activeElement)) outputOpener = document.activeElement;
@@ -1742,7 +1762,7 @@ async function showResult(status, data) {
   // A dialog only announces itself when it takes focus.
   outputBox.focus();
   outputBody.textContent = "loading…";
-  outputMeta.textContent = String(status).toUpperCase();
+  outputMeta.textContent = runStateLabel(status).toUpperCase();
 
   let run = null;
   let outputs = [];
@@ -1755,17 +1775,18 @@ async function showResult(status, data) {
   }
 
   const seconds = state.lastSeconds != null ? state.lastSeconds : run ? run.duration_seconds : null;
-  const bits = [String(status).toUpperCase()];
+  const bits = [runStateLabel(status).toUpperCase()];
   if (seconds != null) bits.push(`${seconds}s`);
   if (run && run.verdict) bits.push(`checker: ${run.verdict}`);
   if (state.runId) bits.push(state.runId.slice(0, 8));
   outputMeta.textContent = bits.join(" · ");
 
   if (status === "complete") {
-    // The plan's agent count, not the done planets: checker revisions add planets.
-    const count = state.plans.length;
+    // The step total includes system and revision steps; plan_ready does not.
+    const total = window.SolO.progress(state.records).total;
+    const count = total || state.plans.length;
     const elapsed = seconds != null ? ` · ${Math.round(seconds * 10) / 10}s` : "";
-    outputTitle.textContent = `${count ? `All ${count} agents completed` : "Run completed"}${elapsed}`;
+    outputTitle.textContent = `${count ? `All ${count} planets completed` : "Run completed"}${elapsed}`;
   } else {
     // Every other outcome keeps the neutral header: never claim success.
     outputTitle.textContent = "Result";
@@ -1798,11 +1819,11 @@ async function showResult(status, data) {
     text = [failure.error_type, failure.failed_at ? `at ${failure.failed_at}` : "", failure.message]
       .filter(Boolean).join(" · ") || "Run failed.";
   } else {
-    text = `Status: ${status}`;
+    text = `Status: ${runStateLabel(status)}`;
   }
 
   outputBody.textContent = text;
-  outputBox.scrollTop = 0;
+  outputBody.scrollTop = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1812,9 +1833,11 @@ async function showResult(status, data) {
 let drawerOpener = null;
 let drawerOpenerKey = null;
 let drawerToken = 0;
+let drawerHadResult = false;
 
 const STATUS_TONE = {
-  Idle: "#8b95b8", Called: "#93c5fd", Working: "#ffd36b", Done: "#4ade80", Failed: "#f87171",
+  Idle: "var(--muted)", Called: "var(--info)", Working: "var(--accent)",
+  Done: "var(--success)", Failed: "var(--error)",
 };
 
 function planetStatus(planet) {
@@ -1826,14 +1849,18 @@ function planetStatus(planet) {
 
 /* Role, task and duration come from the same records the roster uses. */
 function drawerFacts(step, agent) {
-  let task = "";
+  // The header chip must use the roster's vocabulary and status, not a second
+  // derivation of the planet flags.
+  const row = window.SolO.roster(state.records)
+    .find((item) => item.step === step && item.agent === agent);
+  let task = row ? row.task : "";
   let duration = "";
   let calledAt = 0;
   let endedAt = 0;
   (state.records || []).forEach((record) => {
     const data = record.data || {};
     const matches = data.agent === agent && (data.step == null || data.step === step);
-    if (record.event === "plan_ready") {
+    if (record.event === "plan_ready" && !task) {
       const steps = data.steps || [];
       const item = steps[step - 1] && steps[step - 1].agent === agent
         ? steps[step - 1]
@@ -1851,7 +1878,7 @@ function drawerFacts(step, agent) {
     duration = `${((endedAt - calledAt) / 1000).toFixed(1)}s`;
   }
   const planet = state.planets.get(`${step}:${agent}`);
-  const status = planet ? planetStatus(planet) : duration ? "Done" : "Called";
+  const status = row ? row.status : planet ? planetStatus(planet) : duration ? "Done" : "Called";
   return { task, duration, status };
 }
 
@@ -1900,6 +1927,7 @@ function openDrawer(step, agent, opener) {
   panelDuration.textContent = facts.duration ||
     (status === "Working" || status === "Called" ? "in progress" : "—");
   panelOutput.textContent = "loading…";
+  drawerHadResult = !outputBox.classList.contains("hidden");
   panel.classList.remove("hidden");
   outputBox.classList.add("hidden");
   setModal(true);
@@ -1911,7 +1939,14 @@ function closeDrawer() {
   if (panel.classList.contains("hidden")) return;
   drawerToken += 1;
   panel.classList.add("hidden");
-  setModal(false);
+  const restoreResult = drawerHadResult;
+  drawerHadResult = false;
+  if (restoreResult) {
+    outputBox.classList.remove("hidden");
+    setModal(true);
+  } else {
+    setModal(false);
+  }
   const key = drawerOpenerKey;
   let opener = drawerOpener;
   drawerOpener = null;
@@ -1920,7 +1955,9 @@ function closeDrawer() {
   if (key && (!opener || !opener.isConnected)) {
     opener = rosterRows.querySelector(`.row[data-step="${key.step}"][data-agent="${CSS.escape(key.agent)}"]`);
   }
-  if (opener && opener.isConnected) opener.focus();
+  // A restored result can hide the opener on mobile; keep focus visible then.
+  if (opener && opener.isConnected && opener.getClientRects().length) opener.focus();
+  else if (restoreResult) outputBox.focus();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1943,7 +1980,7 @@ function drawBackground(now) {
     camY += ((pointer.y / H - 0.5) * 2 - camY) * 0.05;
   }
 
-  ctx.fillStyle = "#dbe4ff";
+  ctx.fillStyle = "#e7dcc5";
   for (let i = 0; i < stars.length; i += 1) {
     const star = stars[i];
     ctx.globalAlpha = reduceMotion
@@ -1969,7 +2006,7 @@ function drawOrbitRings() {
     const radius = orbitRadius(index);
     ctx.beginPath();
     ctx.ellipse(CX, CY, radius, radius * 0.55, 0, 0, TAU);
-    ctx.strokeStyle = "rgba(146, 164, 224, 0.11)";
+    ctx.strokeStyle = "rgba(236, 231, 220, 0.1)";
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 7]);
     ctx.stroke();
@@ -2089,14 +2126,16 @@ function drawSun(now) {
   ctx.fillStyle = "rgba(255, 245, 214, 0.92)";
   ctx.font = "700 15px 'Space Grotesk', system-ui, sans-serif";
   ctx.fillText("SUN", CX, CY + core + 36);
-  ctx.fillStyle = "rgba(190, 202, 245, 0.72)";
+  ctx.fillStyle = "rgba(163, 154, 137, 0.9)";
   ctx.font = "500 11.5px 'JetBrains Mono', ui-monospace, monospace";
-  const statusText = state.pending
-    ? "waiting for approval"
-    : state.detail
-      ? `${state.sun} · ${state.detail}`
-      : state.sun;
+  const statusText = state.pending ? "waiting for approval" : runStateLabel(state.sun);
   ctx.fillText(statusText.slice(0, 58), CX, CY + core + 52);
+  // The detail gets its own line: a decision never shares the run state's line.
+  const detailText = runDetailText(statusText, state.detail);
+  if (detailText) {
+    ctx.fillStyle = "rgba(163, 154, 137, 0.72)";
+    ctx.fillText(detailText.slice(0, 58), CX, CY + core + 66);
+  }
   ctx.textAlign = "left";
 }
 
@@ -2167,7 +2206,7 @@ function drawPlanet(planet, x, y, now) {
   const t = reduceMotion ? 0 : now;
   const pulse = 0.5 + 0.5 * Math.sin(t * 0.005 + planet.step * 1.7);
   const flicker = planet.failed && !reduceMotion ? 0.45 + 0.55 * Math.abs(Math.sin(now * 0.02)) : 1;
-  const color = planet.failed ? "#ff5d5d" : planet.color;
+  const color = planet.failed ? "#e28372" : planet.color;
   const ringPhase = -0.42 + Math.sin(t * 0.0004 + planet.step) * 0.05;
   const glow = planet.working ? 26 + pulse * 18 : planet.done ? 14 : 9;
 
@@ -2253,19 +2292,19 @@ function drawPlanet(planet, x, y, now) {
     const moonAngle = planet.angle * 2.6 + t * 0.0006;
     const moonX = x + Math.cos(moonAngle) * size * 2.1;
     const moonY = y + Math.sin(moonAngle) * size * 1.2;
-    ctx.fillStyle = "rgba(214, 224, 255, 0.75)";
+    ctx.fillStyle = "rgba(236, 231, 220, 0.7)";
     ctx.beginPath();
     ctx.arc(moonX, moonY, Math.max(1.2, size * 0.16), 0, TAU);
     ctx.fill();
   }
 
   if (planet.done && !planet.failed) {
-    ctx.strokeStyle = `rgba(116, 255, 178, ${0.55 + 0.35 * pulse})`;
+    ctx.strokeStyle = `rgba(140, 199, 157, ${0.55 + 0.35 * pulse})`;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.arc(x, y, size * 1.55, 0, TAU);
     ctx.stroke();
-    ctx.strokeStyle = "#9ef7c1";
+    ctx.strokeStyle = "#a9d9b5";
     ctx.lineWidth = 1.8;
     ctx.beginPath();
     ctx.moveTo(x + size * 1.3, y - size * 1.3);
@@ -2275,7 +2314,7 @@ function drawPlanet(planet, x, y, now) {
   }
 
   if (planet.failed) {
-    ctx.strokeStyle = "#ffd0d0";
+    ctx.strokeStyle = "#f0c4b9";
     ctx.lineWidth = 2;
     const offset = size * 0.75;
     ctx.beginPath();
@@ -2290,19 +2329,19 @@ function drawPlanet(planet, x, y, now) {
     const label = `attempt ${planet.attempts}`;
     ctx.font = "600 12px 'Space Grotesk', system-ui, sans-serif";
     const width = ctx.measureText(label).width + 10;
-    ctx.fillStyle = "rgba(8, 10, 24, 0.85)";
+    ctx.fillStyle = "rgba(8, 7, 6, 0.85)";
     ctx.strokeStyle = hexAlpha(color, 0.7);
     ctx.lineWidth = 1;
     roundRect(x - width / 2, y - size - 20, width, 14, 5);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#e8ecff";
+    ctx.fillStyle = "#ece7dc";
     ctx.textAlign = "center";
     ctx.fillText(label, x, y - size - 9.5);
     ctx.textAlign = "left";
   }
 
-  ctx.fillStyle = "rgba(223, 231, 255, 0.86)";
+  ctx.fillStyle = "rgba(236, 231, 220, 0.86)";
   ctx.font = "600 12px 'Space Grotesk', system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(planet.agent, x, y + size + 15);
@@ -2409,7 +2448,7 @@ function updateAnimation(now) {
     // Slots are computed once per frame, not once per lookup.
     for (const planet of list) planet.alignX = null;
     const finished = list.filter((planet) => planet.appear > 0.05).sort((a, b) => a.step - b.step);
-    const spacing = Math.min(150, (W * 0.38) / Math.max(1, Math.ceil(finished.length / 2)));
+    const spacing = Math.min(150, ((stageRect.width || W) * 0.38) / Math.max(1, Math.ceil(finished.length / 2)));
     finished.forEach((planet, index) => {
       planet.alignX = CX + (index % 2 === 0 ? 1 : -1) * (Math.floor(index / 2) + 1) * spacing;
       planet.alignY = CY;
@@ -2529,8 +2568,9 @@ setInterval(() => {
 /* ------------------------------------------------------------------ */
 
 function syncCmdbarHeight() {
-  // The sheet stacks on the command bar; keep the measured height in a token.
-  document.documentElement.style.setProperty("--cmdbar-h", `${cmdbar.offsetHeight}px`);
+  // The sheet and drawer stack above the measured dock height.
+  document.documentElement.style.setProperty("--dock-h", `${cmdbar.offsetHeight}px`);
+  syncStage();
 }
 
 function setSheet(open) {
@@ -2547,6 +2587,7 @@ function setSheetTab(name) {
 /* Full-screen result or drawer on small screens; the chrome steps aside. */
 function setModal(open) {
   document.body.classList.toggle("modal-open", open);
+  if (!open) syncHeaderHeight();
   syncCmdbarHeight();
 }
 
@@ -2612,7 +2653,15 @@ rosterRows.addEventListener("keydown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  closeDrawer();
+  // Escape closes one layer at a time, so the opener stays visible.
+  if (!panel.classList.contains("hidden")) {
+    closeDrawer();
+    return;
+  }
+  if (!outputBox.classList.contains("hidden")) {
+    closeOutput();
+    return;
+  }
   setSheet(false);
 });
 
@@ -2624,6 +2673,9 @@ resize();
 resetScene();
 setSun("idle", "");
 syncCmdbarHeight();
+if (document.fonts) document.fonts.ready.then(syncHeaderHeight);
+/* Header wrapping, dock height and the sheet all move the stage box. */
+new ResizeObserver(syncStage).observe(document.getElementById("stage"));
 refreshRuns();
 connectStream();
 startLoop();
