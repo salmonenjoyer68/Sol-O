@@ -1609,8 +1609,8 @@ async function refreshRuns() {
     const rows = await response.json();
     const current = replaySelect.value;
     replaySelect.innerHTML = '<option value="">Replay a run…</option>' + rows.map((row) => {
-      const when = (row.created_at || "").replace("T", " ").slice(0, 16);
-      const label = `${when} · ${row.status} · ${(row.task || "").slice(0, 42)}`;
+      const when = (row.created_at || "").replace("T", " ").slice(5, 16);
+      const label = `${when} · ${runStateLabel(row.status)} · ${(row.task || "").slice(0, 42)}`;
       return `<option value="${escapeHtml(row.id)}">${escapeHtml(label)}</option>`;
     }).join("");
     if (current) replaySelect.value = current;
