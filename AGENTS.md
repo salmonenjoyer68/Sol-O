@@ -141,5 +141,6 @@ side-by-side comparison; that is the only place they belong. `docs/adr/` and
   `docs/agents/issue-tracker.md`.
 - **Triage labels**: five canonical roles, default strings `needs-triage`, `needs-info`,
   `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-- **Domain docs**: single context — root `GLOSSARY.md` plus `docs/adr/`. See
+- **Domain docs**: single context — root `GLOSSARY.md` plus `docs/adr/`; the console's
+  product register is `PRODUCT.md` and its visual system is `DESIGN.md`. See
   `docs/agents/domain.md`.
