@@ -10,6 +10,8 @@ Automates customer inquiries: **researcher → writer → checker → logger →
 
 *Live run: each agent is a planet that appears when the Sun calls it, the roster tracks every agent's state and step progress, the activity feed streams timestamped backend events in each agent's colour, and the result card shows the final draft when the planets align.*
 
+What the console is for and how it should read is in [PRODUCT.md](PRODUCT.md); its tokens, type, layout and motion are in [DESIGN.md](DESIGN.md). Terms are in [GLOSSARY.md](GLOSSARY.md).
+
 ## Setup
 ```bash
 cp .env.example .env   # fill in BASE_URL, API_KEY, MODEL
