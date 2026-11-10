@@ -188,7 +188,8 @@
     padding: 16px; background: rgba(8, 7, 6, 0.72);
   }
   #approval .card {
-    width: min(520px, 92vw); background: var(--surface); border: 1px solid var(--border);
+    width: min(520px, 92vw); background: var(--surface);
+    border: 1px solid rgba(236, 231, 220, 0.24);
     border-radius: var(--radius); padding: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
   }
   #approval .label {
@@ -211,6 +212,8 @@
     align-items: flex-start; background: none; pointer-events: none;
   }
   #approval.replay .card { pointer-events: auto; margin: 0 auto; }
+  /* A stored decision is a notice, not an action: it recedes. */
+  #approval.replay .label { color: var(--muted); }
   #approval.replay .row { display: none; }
 
   #tooltip {
@@ -385,6 +388,8 @@
   #sheet .sheet-head { display: none; }
 
   @media (max-width: 1179.98px) {
+    /* The header wraps to two rows here; the replay notice hangs below it. */
+    :root { --header-h: 83px; }
     #app {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1208,6 +1213,10 @@ function syncDecisionGate() {
   approvalBox.classList.toggle("replay", replay);
   if (replay) approvalBox.removeAttribute("aria-modal");
   else approvalBox.setAttribute("aria-modal", "true");
+  approvalBox.setAttribute(
+    "aria-label",
+    replay ? "Stored approval request · replay is read-only" : "Approval required",
+  );
   approvalLabel.textContent = replay
     ? "Stored pending action · replay is read-only · nothing will be sent"
     : deciding
