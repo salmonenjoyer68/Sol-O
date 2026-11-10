@@ -139,6 +139,7 @@
   .pill.complete { color: var(--success); border-color: rgba(140, 199, 157, 0.45); }
   .pill.failed { color: var(--error); border-color: rgba(226, 131, 114, 0.5); }
   .pill.awaiting { color: var(--warning); border-color: rgba(224, 163, 92, 0.55); }
+  .pill.warn { color: var(--warning); border-color: rgba(224, 163, 92, 0.45); }
 
   /* Activity feed: left rail, newest line at the bottom. */
   #log {
@@ -451,7 +452,7 @@
   <header id="bar">
     <span class="wordmark">Sol-O</span>
     <span class="caption">Solar orchestrator</span>
-    <button type="button" id="pill" class="pill" role="status">IDLE</button>
+    <button type="button" id="pill" class="pill"><span id="pill-text" role="status">IDLE</span></button>
     <div class="replay-bar">
       <div id="replay-controls" class="hidden" role="group" aria-label="Replay controls">
         <button id="replay-pause" type="button" aria-pressed="false">Pause</button>
@@ -803,6 +804,7 @@ const runButton = document.getElementById("run");
 const presets = document.getElementById("presets");
 const planCount = document.getElementById("plan-count");
 const pill = document.getElementById("pill");
+const pillText = document.getElementById("pill-text");
 const replaySelect = document.getElementById("replay");
 const replayControls = document.getElementById("replay-controls");
 const replayPause = document.getElementById("replay-pause");
@@ -850,24 +852,44 @@ function escapeHtml(text) {
   }[ch]));
 }
 
+/* One run-state vocabulary for the pill, the Sun and the result meta. */
+const RUN_STATE_LABEL = {
+  orchestrating: "running",
+  working: "running",
+  awaiting: "waiting for approval",
+  awaiting_approval: "waiting for approval",
+};
+const RUN_STATE_TONE = {
+  planning: "planning",
+  running: "working",
+  "waiting for approval": "awaiting",
+  complete: "complete",
+  partial: "warn",
+  "needs clarification": "warn",
+  rejected: "failed",
+  failed: "failed",
+};
+
+function runStateLabel(status) {
+  const key = String(status == null ? "" : status).trim().toLowerCase()
+    .replace(/[\s_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return RUN_STATE_LABEL[key] || key.replace(/_/g, " ") || "idle";
+}
+
+/* A detail that repeats the state would read as a second state. */
+function runDetailText(label, detail) {
+  const text = String(detail || "").trim();
+  return runStateLabel(text) === label ? "" : text;
+}
+
 function setSun(status, detail) {
   // While an approval is pending, worker/tool events must not hide the gate.
   if (state.pending && (status === "orchestrating" || status === "planning")) status = "awaiting";
   state.sun = status;
   state.detail = detail || "";
-  const label = status === "awaiting" ? "waiting for approval" : status;
-  pill.textContent = (state.mode === "replay" ? "REPLAY · " : "") + label.toUpperCase();
-  pill.className = "pill " + ({
-    planning: "planning",
-    orchestrating: "working",
-    working: "working",
-    complete: "complete",
-    partial: "failed",
-    failed: "failed",
-    awaiting: "awaiting",
-    rejected: "failed",
-    idle: "",
-  }[status] || "");
+  const label = runStateLabel(status);
+  pillText.textContent = (state.mode === "replay" ? "REPLAY · " : "") + label.toUpperCase();
+  pill.className = "pill " + (RUN_STATE_TONE[label] || "");
 }
 
 function showPlanCount(count) {
@@ -1029,6 +1051,9 @@ window.SolO = {
   },
   accent(agent) {
     return styleFor(String(agent)).color;
+  },
+  runState(status) {
+    return runStateLabel(status);
   },
   replay() {
     return {
@@ -1536,7 +1561,7 @@ async function replayRun(runId) {
   state.follow = runId;
   state.runId = runId;
   resetScene();
-  pill.textContent = "REPLAY · LOADING";
+  pillText.textContent = "REPLAY · LOADING";
   pill.className = "pill working";
 
   try {
@@ -1546,7 +1571,7 @@ async function replayRun(runId) {
     const records = await response.json();
     if (stale()) return;
     if (!records.length) {
-      pill.textContent = "REPLAY · EMPTY";
+      pillText.textContent = "REPLAY · EMPTY";
       return;
     }
     replayPlayer.records = records;
@@ -1554,7 +1579,7 @@ async function replayRun(runId) {
     scheduleReplayStep(0);
   } catch (error) {
     if (stale()) return;
-    pill.textContent = "REPLAY · ERROR";
+    pillText.textContent = "REPLAY · ERROR";
     pill.className = "pill failed";
     pushLog("error", { message: String(error.message || error) });
   }
@@ -1658,7 +1683,7 @@ async function showResult(status, data) {
   // A dialog only announces itself when it takes focus.
   outputBox.focus();
   outputBody.textContent = "loading…";
-  outputMeta.textContent = String(status).toUpperCase();
+  outputMeta.textContent = runStateLabel(status).toUpperCase();
 
   let run = null;
   let outputs = [];
@@ -1671,7 +1696,7 @@ async function showResult(status, data) {
   }
 
   const seconds = state.lastSeconds != null ? state.lastSeconds : run ? run.duration_seconds : null;
-  const bits = [String(status).toUpperCase()];
+  const bits = [runStateLabel(status).toUpperCase()];
   if (seconds != null) bits.push(`${seconds}s`);
   if (run && run.verdict) bits.push(`checker: ${run.verdict}`);
   if (state.runId) bits.push(state.runId.slice(0, 8));
@@ -1714,7 +1739,7 @@ async function showResult(status, data) {
     text = [failure.error_type, failure.failed_at ? `at ${failure.failed_at}` : "", failure.message]
       .filter(Boolean).join(" · ") || "Run failed.";
   } else {
-    text = `Status: ${status}`;
+    text = `Status: ${runStateLabel(status)}`;
   }
 
   outputBody.textContent = text;
@@ -2007,12 +2032,14 @@ function drawSun(now) {
   ctx.fillText("SUN", CX, CY + core + 36);
   ctx.fillStyle = "rgba(163, 154, 137, 0.9)";
   ctx.font = "500 11.5px 'JetBrains Mono', ui-monospace, monospace";
-  const statusText = state.pending
-    ? "waiting for approval"
-    : state.detail
-      ? `${state.sun} · ${state.detail}`
-      : state.sun;
+  const statusText = state.pending ? "waiting for approval" : runStateLabel(state.sun);
   ctx.fillText(statusText.slice(0, 58), CX, CY + core + 52);
+  // The detail gets its own line: a decision never shares the run state's line.
+  const detailText = runDetailText(statusText, state.detail);
+  if (detailText) {
+    ctx.fillStyle = "rgba(163, 154, 137, 0.72)";
+    ctx.fillText(detailText.slice(0, 58), CX, CY + core + 66);
+  }
   ctx.textAlign = "left";
 }
 
