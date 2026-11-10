@@ -188,7 +188,8 @@
     padding: 16px; background: rgba(8, 7, 6, 0.72);
   }
   #approval .card {
-    width: min(520px, 92vw); background: var(--surface); border: 1px solid var(--border);
+    width: min(520px, 92vw); background: var(--surface);
+    border: 1px solid rgba(236, 231, 220, 0.24);
     border-radius: var(--radius); padding: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
   }
   #approval .label {
@@ -211,6 +212,8 @@
     align-items: flex-start; background: none; pointer-events: none;
   }
   #approval.replay .card { pointer-events: auto; margin: 0 auto; }
+  /* A stored decision is a notice, not an action: it recedes. */
+  #approval.replay .label { color: var(--muted); }
   #approval.replay .row { display: none; }
 
   #tooltip {
@@ -256,7 +259,7 @@
     color: var(--error); border-color: rgba(226, 131, 114, 0.5);
     background: rgba(226, 131, 114, 0.1);
   }
-  #panel-body { padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; color: var(--fg); }
+  #panel-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; color: var(--fg); }
   #panel .fields { margin: 0 0 12px; display: grid; gap: 8px; }
   #panel .fields div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; }
   #panel dt {
@@ -387,6 +390,8 @@
   #sheet .sheet-head { display: none; }
 
   @media (max-width: 1179.98px) {
+    /* The header wraps to two rows here; the replay notice hangs below it. */
+    :root { --header-h: 83px; }
     #app {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -435,7 +440,12 @@
       position: fixed; inset: 0; width: auto; max-width: none; max-height: none;
       border: 0; padding-bottom: env(safe-area-inset-bottom, 0);
     }
-    #panel { z-index: 32; }
+    /* Full-screen sheet: keep content inside the notch and side insets. */
+    #panel {
+      z-index: 32; overflow-x: hidden;
+      padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+               env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+    }
     /* The result fills the viewport down to the safe area; its body scrolls. */
     #output {
       z-index: 34;
@@ -1211,6 +1221,10 @@ function syncDecisionGate() {
   approvalBox.classList.toggle("replay", replay);
   if (replay) approvalBox.removeAttribute("aria-modal");
   else approvalBox.setAttribute("aria-modal", "true");
+  approvalBox.setAttribute(
+    "aria-label",
+    replay ? "Stored approval request · replay is read-only" : "Approval required",
+  );
   approvalLabel.textContent = replay
     ? "Stored pending action · replay is read-only · nothing will be sent"
     : deciding
@@ -1617,8 +1631,8 @@ async function refreshRuns() {
     const rows = await response.json();
     const current = replaySelect.value;
     replaySelect.innerHTML = '<option value="">Replay a run…</option>' + rows.map((row) => {
-      const when = (row.created_at || "").replace("T", " ").slice(0, 16);
-      const label = `${when} · ${row.status} · ${(row.task || "").slice(0, 42)}`;
+      const when = (row.created_at || "").replace("T", " ").slice(5, 16);
+      const label = `${when} · ${runStateLabel(row.status)} · ${(row.task || "").slice(0, 42)}`;
       return `<option value="${escapeHtml(row.id)}">${escapeHtml(label)}</option>`;
     }).join("");
     if (current) replaySelect.value = current;
@@ -1761,6 +1775,7 @@ async function showResult(status, data) {
 let drawerOpener = null;
 let drawerOpenerKey = null;
 let drawerToken = 0;
+let drawerHadResult = false;
 
 const STATUS_TONE = {
   Idle: "#a39a89", Called: "#8fb3d9", Working: "#e9b45c", Done: "#8cc79d", Failed: "#e28372",
@@ -1775,14 +1790,18 @@ function planetStatus(planet) {
 
 /* Role, task and duration come from the same records the roster uses. */
 function drawerFacts(step, agent) {
-  let task = "";
+  // The header chip must use the roster's vocabulary and status, not a second
+  // derivation of the planet flags.
+  const row = window.SolO.roster(state.records)
+    .find((item) => item.step === step && item.agent === agent);
+  let task = row ? row.task : "";
   let duration = "";
   let calledAt = 0;
   let endedAt = 0;
   (state.records || []).forEach((record) => {
     const data = record.data || {};
     const matches = data.agent === agent && (data.step == null || data.step === step);
-    if (record.event === "plan_ready") {
+    if (record.event === "plan_ready" && !task) {
       const steps = data.steps || [];
       const item = steps[step - 1] && steps[step - 1].agent === agent
         ? steps[step - 1]
@@ -1800,7 +1819,7 @@ function drawerFacts(step, agent) {
     duration = `${((endedAt - calledAt) / 1000).toFixed(1)}s`;
   }
   const planet = state.planets.get(`${step}:${agent}`);
-  const status = planet ? planetStatus(planet) : duration ? "Done" : "Called";
+  const status = row ? row.status : planet ? planetStatus(planet) : duration ? "Done" : "Called";
   return { task, duration, status };
 }
 
@@ -1849,6 +1868,7 @@ function openDrawer(step, agent, opener) {
   panelDuration.textContent = facts.duration ||
     (status === "Working" || status === "Called" ? "in progress" : "—");
   panelOutput.textContent = "loading…";
+  drawerHadResult = !outputBox.classList.contains("hidden");
   panel.classList.remove("hidden");
   outputBox.classList.add("hidden");
   setModal(true);
@@ -1860,7 +1880,14 @@ function closeDrawer() {
   if (panel.classList.contains("hidden")) return;
   drawerToken += 1;
   panel.classList.add("hidden");
-  setModal(false);
+  const restoreResult = drawerHadResult;
+  drawerHadResult = false;
+  if (restoreResult) {
+    outputBox.classList.remove("hidden");
+    setModal(true);
+  } else {
+    setModal(false);
+  }
   const key = drawerOpenerKey;
   let opener = drawerOpener;
   drawerOpener = null;
@@ -1869,7 +1896,9 @@ function closeDrawer() {
   if (key && (!opener || !opener.isConnected)) {
     opener = rosterRows.querySelector(`.row[data-step="${key.step}"][data-agent="${CSS.escape(key.agent)}"]`);
   }
-  if (opener && opener.isConnected) opener.focus();
+  // A restored result can hide the opener on mobile; keep focus visible then.
+  if (opener && opener.isConnected && opener.getClientRects().length) opener.focus();
+  else if (restoreResult) outputBox.focus();
 }
 
 /* ------------------------------------------------------------------ */
@@ -2564,8 +2593,15 @@ rosterRows.addEventListener("keydown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (!outputBox.classList.contains("hidden")) closeOutput();
-  closeDrawer();
+  // Escape closes one layer at a time, so the opener stays visible.
+  if (!panel.classList.contains("hidden")) {
+    closeDrawer();
+    return;
+  }
+  if (!outputBox.classList.contains("hidden")) {
+    closeOutput();
+    return;
+  }
   setSheet(false);
 });
 
