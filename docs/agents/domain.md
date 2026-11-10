@@ -6,6 +6,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 - **`GLOSSARY.md`** at the repo root (this repo's glossary — skills call it `CONTEXT.md`), or
 - **`CONTEXT-MAP.md`** at the repo root if it exists — it points at one glossary per context. Read each one relevant to the topic.
+- **`PRODUCT.md`** for the product register and the console's purpose; **`DESIGN.md`** for its tokens, type, layout, and motion.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.

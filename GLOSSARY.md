@@ -11,8 +11,8 @@ Terms Sol-O's code, prompts and UI rely on. One line each; the code is authorita
 - **Agent** — the unit the planner names: one `agents/<name>.md` prompt plus exactly one output model (`step_schema`/`validate_step_output` in `src/schemas.rs`). `sun` is an agent but not a runnable one.
 - **Step** — one position in a run's plan: an agent call, or a code-only system step. "Planet" is the UI and prose word for a step; code identifiers use `agent` (`StepResult`, `PlannedStep`), while comments and test prose say planet freely.
 - **System step** — a step the Sun always appends after the LLM plan (`SYSTEM_STEPS`: `logger`, then `notifier`). The planner never sees or chooses it.
-- **Planet row** — one row of the planet roster, one per planned step: step number, agent, role, status, and progress. A revised plan can give the same agent two rows under different steps.
-- **Stage** — the canvas surface between the rails, where the Sun sits at the centre with its planets on their orbit rings and the alignment marks completion; the visual view of a run whose text equivalent is the planet roster.
+- **Planet row** — one row of the planet roster, one per step: step number, agent, role, status, and progress. System and revision steps get their own rows, so a revised plan can show the same agent twice under different steps.
+- **Stage** — the canvas surface between the rails, where the Sun sits at the centre with a planet per step on the orbit rings and the alignment marks completion; its text equivalent is the planet roster, which lists the same steps.
 - **Run state** — the lifecycle label shown by the status pill and the Sun: idle, planning, running, waiting for approval, complete, partial, needs clarification, rejected, failed. An approval decision (approved or rejected) is a separate detail, not a run state.
 - **Service** — the `sol-o` binary: `serve` exposes the HTTP API, SSE stream and UI; the other subcommands are the operator CLI. One process, one SQLite file.
 - **Reference implementation** — the frozen Python tree (`app/`, `tools/`, their tests) kept after ADR 0002. It reads as documentation; no new features land there.
