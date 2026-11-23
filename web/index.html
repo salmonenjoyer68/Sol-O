@@ -1114,6 +1114,9 @@ function planetFor(step, agent, placeholder) {
 }
 
 let sceneToken = 0;
+/* Bumped whenever a decision clears the gate, so a restore that began
+   before the decision can never reopen it. */
+let decisionCounter = 0;
 
 function resetScene() {
   sceneToken += 1;
@@ -1166,6 +1169,7 @@ function syncDecisionGate() {
 
 /* Drop the gate without deciding anything. */
 function clearPendingGate() {
+  decisionCounter += 1;
   state.pending = null;
   approvalBox.classList.add("hidden");
 }
@@ -1175,12 +1179,15 @@ function clearPendingGate() {
 async function restorePending() {
   if (state.pending || state.mode !== "live") return;
   const token = sceneToken;
+  const decision = decisionCounter;
   try {
     const response = await fetch("/pending");
     if (!response.ok) return;
     const rows = await response.json();
-    // The run or replay may have changed while this fetch was in flight.
-    if (token !== sceneToken || state.mode !== "live" || state.pending) return;
+    // The run, replay, or approval decision may have changed while this
+    // fetch was in flight; a stale row must not reopen a cleared gate.
+    if (token !== sceneToken || decision !== decisionCounter ||
+        state.mode !== "live" || state.pending) return;
     if (!Array.isArray(rows) || !rows.length) return;
     const row = state.follow
       ? [...rows].reverse().find((item) => item.run_id === state.follow)
@@ -1279,8 +1286,8 @@ function applyEvent(record) {
       break;
     }
     case "approval_decided": {
-      state.pending = null;
-      approvalBox.classList.add("hidden");
+      // Also retires any restore that was already in flight.
+      clearPendingGate();
       refreshRuns();
       const runStatus = data.run_status || (data.decision === "approved" ? "complete" : "rejected");
       if (data.decision === "approved" && runStatus === "complete") {
