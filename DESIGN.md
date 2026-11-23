@@ -58,6 +58,8 @@ Space Grotesk for reading and controls, JetBrains Mono only for timestamps, dura
 
 Times, durations, step counts, and the plan count use `font-variant-numeric: tabular-nums`. Result text keeps a comfortable measure of about 68 characters wherever the surface is wide enough.
 
+Below 600px the task field and replay select render at 16px, so a focused field cannot trigger iOS focus zoom while the viewport still permits pinch zoom.
+
 ## Shape and spacing
 
 - 2px radius on the task input, the approval surface, and the tooltip; buttons and structural regions are square.
